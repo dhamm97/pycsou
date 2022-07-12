@@ -97,6 +97,10 @@ class NUFFT(pyca.LinOp):
     For the type-3 NUFFT, the non-uniform samples :math:`\mathbf{x}_{j}` and
     :math:`\mathbf{z}_{k}` are arbitrary points in :math:`\mathbb{R}^d`.
 
+    **Adjoint NUFFTs.**
+    The NUFFTs of Types 1 and 2 with opposite signs form an *adjoint pair*. The adjoint of the NUFFT of Type 3 is obtained by
+    flipping the transform's sign and switching the roles of   :math:`\mathbf{z}_k` and :math:`\mathbf{x}_{j}` in (3).
+
     **Lipschitz Constants.**
     The type-1 NUFFT can be interpreted as the truncated Fourier Series of a :math:`2\pi`-periodic
     Dirac stream with innovations :math:`(w_j, \mathbf{x}_j)`.
@@ -167,7 +171,8 @@ class NUFFT(pyca.LinOp):
 
     **Backend.** The NUFFT tansforms are computed via Python wrappers to `FINUFFT
     <https://github.com/flatironinstitute/finufft>`_ and `cuFINUFFT
-    <https://github.com/flatironinstitute/cufinufft>`_ (see also [FINUFFT]_ and [cuFINUFFT]_).
+    <https://github.com/flatironinstitute/cufinufft>`_ (see also [FINUFFT]_ and [cuFINUFFT]_). These librairies perform
+    the expensive spreading/interpolation between nonuniform points and the fine grid via the “exponential of semicircle” kernel (see [FINUFFT]_).
 
     **Optional Parameters.**
     [cu]FINUFFT exposes many optional parameters to adjust the performance of the algorithms, change
@@ -629,14 +634,13 @@ class _NUFFT3(NUFFT):
         z_c = 0.5 * z.ptp(axis=0) if cz else 0
         xp = pycu.get_array_module(x)
         self._pre_phase = self._post_phase = None
+        if cx:  # Do not interchange this two if statements or incorrect
+            self._post_phase = xp.exp(1j * isign * z.dot(x_c))  # (N,)
+            x -= x_c
         if cz:
             self._pre_phase = xp.exp(1j * isign * x.dot(z_c))  # (M,)
-        if cx:
-            self._post_phase = xp.exp(1j * isign * z.dot(x_c))  # (N,)
-        if cz and cx:
-            self._post_phase *= xp.exp(-1j * isign * (x_c @ z_c))
-        x -= x_c
-        z -= z_c
+            z -= z_c
+        kwargs["x"], kwargs["z"] = x, z
         # ---------------------------------------------------------------------
 
         self._real = kwargs.pop("real")
