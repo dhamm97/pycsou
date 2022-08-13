@@ -36,7 +36,7 @@ class NUFFT(pyca.LinOp):
     The transforms should be instantiated via
     :py:meth:`~pycsou.operator.linop.nufft.NUFFT.type1`,
     :py:meth:`~pycsou.operator.linop.nufft.NUFFT.type2`, and
-    :py:meth:`~pycsou.operator.linop.nufft.NUFFT.type3` respectively.
+    :py:meth:`~pycsou.operator.linop.nufft.NUFFT.type3` respectively (see each method for usage examples).
 
     The dimension of the NUFFT transforms is inferred from the dimensions of the input arguments,
     with support for for :math:`d=\{1,2,3\}`.
@@ -176,17 +176,31 @@ class NUFFT(pyca.LinOp):
     from FINUFFT and its `companion page
     <https://finufft.readthedocs.io/en/latest/opts.html#options-parameters>`_ for details.
 
+    .. Hint::
+
+        FINUFFT exposes a ``dtype`` keyword to control the precision (single or double) at which
+        transforms are performed.
+        This parameter is ignored by :py:class:`~pycsou.operator.linop.nufft.NUFFT`.
+        Use the context manager :py:class:`~pycsou.runtime.Precision` to control the floating point
+        precision.
+
+    .. warning::
+
+        The NUFFT is performed in **chunks of size (n_trans, K)** where K is the size of the non-stacking dimension of input arrays and
+        n_trans the number of simultaneous transforms requested (see the ``n_trans`` parameter of `finufft.Plan <https://finufft.readthedocs.io/en/latest/python.html#finufft.Plan>`_.).
+        To avoid memory overloading and bad performances, one must hence make sure that *each chunk fits comfortably in memory*.
+        Note that this recommendation applies to Dask arrays too, which are rechunked to meet such chunk sizes (FINUFFT cannot process arbitrary chunk sizes).
+
+        Additionally, this class is **only compatible** with Dask's `distributed scheduler <https://distributed.dask.org/en/stable/>`_ in multithreading mode (``processes=False``). [#]_
+        Indeed, the sharing of FINUFFT's plan among all workers creates a race condition which, unlike Dask's default schedulers, the distributed scheduler can prevent by means of locks.
+        One implication of this implementation is that chunks are processed serially one after the other, while NUFFT computations within each chunk are multithreaded.
+        Note moreover that **multiprocessing is currently not available** due to serialization issues of FINUFFT's C routines (will be fixed in the future).
+
+    .. [#] The distributed scheduler in multithreading mode can be invoked as ``from dask.distributed import Client; client=Client(processes=False)``.
     .. [#] FINUFFT uses the following rule of thumb:
            for a given dimension, if the magnitude of the center is less than 10% of half the
            peak-to-peak distance, then the data is considered well-centered and no fix is performed.
 
-    Warnings
-    --------
-    FINUFFT exposes a ``dtype`` keyword to control the precision (single or double) at which
-    transforms are performed.
-    This parameter is ignored by :py:class:`~pycsou.operator.linop.nufft.NUFFT`.
-    Use the context manager :py:class:`~pycsou.runtime.Precision` to control the floating point
-    precision.
 
     See Also
     --------
@@ -228,7 +242,7 @@ class NUFFT(pyca.LinOp):
         **kwargs
             Extra kwargs to `finufft.Plan <https://finufft.readthedocs.io/en/latest/python.html#finufft.Plan>`_.
             (Illegal keywords are dropped silently.)
-            Most useful is ``n_trans`` and ``debug`` (for debugging or diagnostics).
+            Most useful are ``n_trans``, ``nthreads`` and ``debug`` (for debugging or diagnostics).
 
         Returns
         -------
@@ -310,7 +324,7 @@ class NUFFT(pyca.LinOp):
         **kwargs
             Extra kwargs to `finufft.Plan <https://finufft.readthedocs.io/en/latest/python.html#finufft.Plan>`_.
             (Illegal keywords are dropped silently.)
-            Most useful is ``n_trans`` and ``debug`` (for debugging or diagnostics).
+            Most useful are ``n_trans``, ``nthreads`` and ``debug`` (for debugging or diagnostics).
 
         Returns
         -------
@@ -395,7 +409,7 @@ class NUFFT(pyca.LinOp):
         **kwargs
             Extra kwargs to `finufft.Plan <https://finufft.readthedocs.io/en/latest/python.html#finufft.Plan>`_.
             (Illegal keywords are dropped silently.)
-            Most useful is ``n_trans`` and ``debug`` (for debugging or diagnostics).
+            Most useful are ``n_trans``, ``nthreads`` and ``debug`` (for debugging or diagnostics).
 
         Returns
         -------
@@ -444,6 +458,70 @@ class NUFFT(pyca.LinOp):
             **kwargs,
         )
         return _NUFFT3(**init_kwargs).squeeze()
+
+    def apply(self, arr: pyct.NDArray) -> pyct.NDArray:
+        r"""
+        Parameters
+        ----------
+        arr: pyct.NDArray (constructor-dependant)
+            - **Type 1 and 3:**
+                * (...,  M) input weights :math:`\mathbf{w} \in \mathbb{R}^{M}` (real transform).
+                * (..., 2M) input weights :math:`\mathbf{w} \in \mathbb{C}^{M}` viewed as a real array.
+                  (see :py:func:`~pycsou.util.complex.view_as_real`).
+            - **Type 2:**
+                * (...,  N.prod()) output weights :math:`\mathbf{u} \in
+                  \mathbb{R}^{\mathcal{I}_{N_1,\ldots, N_d}}` (real transform).
+                * (..., 2N.prod()) output weights :math:`\mathbf{u} \in
+                  \mathbb{C}^{\mathcal{I}_{N_1,\ldots, N_d}}` viewed as a real array.
+                  (see :py:func:`~pycsou.util.complex.view_as_real`).
+
+        Returns
+        -------
+        out: pyct.NDArray (constructor-dependant)
+            - **Type 1:**
+                (..., 2N.prod()) output weights :math:`\mathbf{u} \in
+                \mathbb{C}^{\mathcal{I}_{N_1,\ldots, N_d}}` viewed as a real array.
+                (see :py:func:`~pycsou.util.complex.view_as_real`).
+            - **Type 2:**
+                (..., 2M) input weights :math:`\mathbf{w} \in \mathbb{C}^{M}` viewed as a real array.
+                (see :py:func:`~pycsou.util.complex.view_as_real`).
+            - **Type 3:**
+                (..., 2N) output weights :math:`\mathbf{v} \in \mathbb{C}^{N}` viewed as a real array.
+                (see :py:func:`~pycsou.util.complex.view_as_real`).
+        """
+        raise NotImplementedError
+
+    def adjoint(self, arr: pyct.NDArray) -> pyct.NDArray:
+        r"""
+        Parameters
+        ----------
+        arr: pyct.NDArray (constructor-dependant)
+            - **Type 1:**
+                (..., 2N.prod()) output weights :math:`\mathbf{u} \in
+                \mathbb{C}^{\mathcal{I}_{N_1,\ldots, N_d}}` viewed as a real array.
+                (see :py:func:`~pycsou.util.complex.view_as_real`).
+            - **Type 2:**
+                (..., 2M) input weights :math:`\mathbf{w} \in \mathbb{C}^{M}` viewed as a real array.
+                (see :py:func:`~pycsou.util.complex.view_as_real`).
+            - **Type 3:**
+                (..., 2N) output weights :math:`\mathbf{v} \in \mathbb{C}^{N}` viewed as a real array.
+                (see :py:func:`~pycsou.util.complex.view_as_real`).
+
+        Returns
+        -------
+        out: pyct.NDArray (constructor-dependant)
+            - **Type 1 and 3:**
+                * (...,  M) input weights :math:`\mathbf{w} \in \mathbb{R}^{M}` (real transform).
+                * (..., 2M) input weights :math:`\mathbf{w} \in \mathbb{C}^{M}` viewed as a real array.
+                  (see :py:func:`~pycsou.util.complex.view_as_real`).
+            - **Type 2:**
+                * (...,  N.prod()) output weights :math:`\mathbf{u} \in
+                  \mathbb{R}^{\mathcal{I}_{N_1,\ldots, N_d}}` (real transform).
+                * (..., 2N.prod()) output weights :math:`\mathbf{u} \in
+                  \mathbb{C}^{\mathcal{I}_{N_1,\ldots, N_d}}` viewed as a real array.
+                  (see :py:func:`~pycsou.util.complex.view_as_real`).
+        """
+        raise NotImplementedError
 
     @staticmethod
     def _as_canonical_coordinate(x: pyct.NDArray) -> pyct.NDArray:

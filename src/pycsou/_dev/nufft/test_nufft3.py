@@ -48,6 +48,6 @@ if __name__ == "__main__":
         res_fw = (np.linalg.norm(A_out_fw - B_out_fw, axis=-1) / np.linalg.norm(B_out_fw, axis=-1)).max()
         res_bw = (np.linalg.norm(A_out_bw - B_out_bw, axis=-1) / np.linalg.norm(B_out_bw, axis=-1)).max()
         if use_dask:
-            res_fw, res_bw = pycu.compute(res_fw, res_bw, scheduler="multiprocessing")
+            res_fw, res_bw = pycu.compute(res_fw, res_bw)
         print(res_fw)
         print(res_bw)
