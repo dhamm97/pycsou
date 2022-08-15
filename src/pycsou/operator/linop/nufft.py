@@ -130,7 +130,7 @@ class NUFFT(pyca.LinOp):
     :math:`\|\tilde{\mathbf{w}}-{\mathbf{w}}\|_2/\|{\mathbf{w}}\|_2` are **almost always similar to
     the user-requested tolerance** :math:`\varepsilon`, except when round-off error dominates
     (i.e. very small user-requested tolerances).
-    The same holds approximately for the NUFFT of Type 3.
+    The same holds approximately for the type-3 NUFFT.
     Note however that this is a *typical error analysis*: some degenerate (but rare) worst-case
     scenarios can result in much higher errors.
 
@@ -155,7 +155,7 @@ class NUFFT(pyca.LinOp):
     The complexity of the type-3 NUFFT can be arbitrarily large for poorly-centered data. In certain
     cases however, an easy fix consists in centering the data before/after the NUFFT via
     pre/post-phasing operations, as described in equation (3.24) of [FINUFFT]_.
-    This optimization is automatically by FINUFFT if the compute/memory gains are significant
+    This optimization is automatically carried out by FINUFFT if the compute/memory gains are significant
     enough. [#]_
 
     **Backend.** The NUFFT tansforms are computed via Python wrappers to `FINUFFT
@@ -196,10 +196,10 @@ class NUFFT(pyca.LinOp):
         One implication of this implementation is that chunks are processed serially one after the other, while NUFFT computations within each chunk are multithreaded.
         Note moreover that **multiprocessing is currently not available** due to serialization issues of FINUFFT's C routines (will be fixed in the future).
 
-    .. [#] The distributed scheduler in multithreading mode can be invoked as ``from dask.distributed import Client; client=Client(processes=False)``.
     .. [#] FINUFFT uses the following rule of thumb:
            for a given dimension, if the magnitude of the center is less than 10% of half the
            peak-to-peak distance, then the data is considered well-centered and no fix is performed.
+    .. [#] The distributed scheduler in multithreading mode can be invoked as ``from dask.distributed import Client; client=Client(processes=False)``.
 
 
     See Also
@@ -772,7 +772,16 @@ class _NUFFT1(NUFFT):
         data, N, sh = self._preprocess(arr, self._n, np.prod(self._N))
 
         if isinstance(data, da.Array):
-            lock = dad.Lock("fw_lock")  # Use lock to avoid race condition because of the shared FFTW resources.
+            try:
+                lock = dad.Lock()  # Use lock to avoid race condition because of the shared FFTW resources.
+            except:
+                error_message = r"""
+                The NUFFT operator requires Dask's distributed scheduler in multi-threading mode (other schedulers are not accepted).
+                Start a client and point it to the scheduler address:
+                    from dask.distributed import Client
+                    client = Client('ip-addr-of-scheduler:8786', processes=False)
+                """
+                raise ValueError(error_message)
             out = data.rechunk(chunks=(1, -1, -1)).map_blocks(
                 func=self._fw_locked,
                 dtype=data.dtype,
@@ -815,7 +824,16 @@ class _NUFFT1(NUFFT):
         data, N, sh = self._preprocess(arr, self._n, self._M)
 
         if isinstance(data, da.Array):
-            lock = dad.Lock("bw_lock")  # Use lock to avoid race condition because of the shared FFTW resources.
+            try:
+                lock = dad.Lock()  # Use lock to avoid race condition because of the shared FFTW resources.
+            except:
+                error_message = r"""
+                The NUFFT operator requires Dask's distributed scheduler in multi-threading mode (other schedulers are not accepted).
+                Start a client and point it to the scheduler address:
+                    from dask.distributed import Client
+                    client = Client('ip-addr-of-scheduler:8786', processes=False)
+                """
+                raise ValueError(error_message)
             out = data.rechunk(chunks=(1, -1, -1)).map_blocks(
                 func=self._bw_locked,
                 dtype=data.dtype,
@@ -966,7 +984,16 @@ class _NUFFT3(NUFFT):
         data, N, sh = self._preprocess(arr, self._n, self._N)
 
         if isinstance(data, da.Array):
-            lock = dad.Lock("fw_lock")  # Use lock to avoid race condition because of the shared FFTW resources.
+            try:
+                lock = dad.Lock()  # Use lock to avoid race condition because of the shared FFTW resources.
+            except:
+                error_message = r"""
+                The NUFFT operator requires Dask's distributed scheduler in multi-threading mode (other schedulers are not accepted).
+                Start a client and point it to the scheduler address:
+                    from dask.distributed import Client
+                    client = Client('ip-addr-of-scheduler:8786', processes=False)
+                """
+                raise ValueError(error_message)
             out = data.rechunk(chunks=(1, -1, -1)).map_blocks(
                 func=self._fw_locked,
                 dtype=data.dtype,
@@ -999,7 +1026,16 @@ class _NUFFT3(NUFFT):
         arr = pycu.view_as_complex(arr)
         data, N, sh = self._preprocess(arr, self._n, self._M)
         if isinstance(data, da.Array):
-            lock = dad.Lock("bw_lock")  # Use lock to avoid race condition because of the shared FFTW resources.
+            try:
+                lock = dad.Lock("bw_lock")  # Use lock to avoid race condition because of the shared FFTW resources.
+            except:
+                error_message = r"""
+                The NUFFT operator requires Dask's distributed scheduler in multi-threading mode (other schedulers are not accepted).
+                Start a client and point it to the scheduler address:
+                    from dask.distributed import Client
+                    client = Client('ip-addr-of-scheduler:8786', processes=False)
+                """
+                raise ValueError(error_message)
             out = data.rechunk(chunks=(1, -1, -1)).map_blocks(
                 func=self._bw_locked,
                 dtype=data.dtype,
