@@ -962,7 +962,7 @@ class _NUFFT1(NUFFT):
         except:
             raise ValueError(f"Unsupported dtype {dtype}.")
 
-        cmat = self.complex_matrix(xp=xp).astype(pycrt.Width(width).complex.value)
+        cmat = self.complex_matrix(xp=xp).astype(width.complex.value)
         return pycu.view_as_real_mat(cmat, real_input=self._real_input, real_output=self._real_output).astype(dtype)
 
 
@@ -1183,5 +1183,5 @@ class _NUFFT3(NUFFT):
         except:
             raise ValueError(f"Unsupported dtype {dtype}.")
 
-        cmat = self.complex_matrix(xp=xp).astype(pycrt.Width(np.dtype(dtype)).complex.value)
+        cmat = self.complex_matrix(xp=xp).astype(width.complex.value)
         return pycu.view_as_real_mat(cmat, real_input=self._real).astype(dtype)
