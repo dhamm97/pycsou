@@ -954,8 +954,16 @@ class _NUFFT1(NUFFT):
         xp: pyct.ArrayModule = np,
         dtype: typ.Optional[type] = None,
     ) -> pyct.NDArray:
-        cmat = self.complex_matrix(xp=xp).astype(pycrt.getPrecision().complex.value)
-        return pycu.view_as_real_mat(cmat, real_input=self._real_input, real_output=self._real_output)
+        if dtype is None:
+            dtype = pycrt.getPrecision().value
+
+        try:
+            width = pycrt.Width(np.dtype(dtype))
+        except:
+            raise ValueError(f"Unsupported dtype {dtype}.")
+
+        cmat = self.complex_matrix(xp=xp).astype(pycrt.Width(width).complex.value)
+        return pycu.view_as_real_mat(cmat, real_input=self._real_input, real_output=self._real_output).astype(dtype)
 
 
 class _NUFFT3(NUFFT):
@@ -1167,5 +1175,13 @@ class _NUFFT3(NUFFT):
         xp: pyct.ArrayModule = np,
         dtype: typ.Optional[type] = None,
     ) -> pyct.NDArray:
-        cmat = self.complex_matrix(xp=xp).astype(pycrt.getPrecision().complex.value)
-        return pycu.view_as_real_mat(cmat, real_input=self._real)
+        if dtype is None:
+            dtype = pycrt.getPrecision().value
+
+        try:
+            width = pycrt.Width(np.dtype(dtype))
+        except:
+            raise ValueError(f"Unsupported dtype {dtype}.")
+
+        cmat = self.complex_matrix(xp=xp).astype(pycrt.Width(np.dtype(dtype)).complex.value)
+        return pycu.view_as_real_mat(cmat, real_input=self._real).astype(dtype)
