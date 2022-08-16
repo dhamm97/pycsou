@@ -378,7 +378,9 @@ class NUFFT(pyca.LinOp):
             real_output=real,
             **kwargs,
         )
-        return _NUFFT1(**init_kwargs).squeeze().T
+        op = _NUFFT1(**init_kwargs).squeeze().T
+        op.complex_matrix = lambda _, xp: op.complex_matrix(_, xp).conj().T
+        return op
 
     @staticmethod
     @pycrt.enforce_precision(i=("x", "z"), o=False, allow_None=False)
@@ -523,6 +525,90 @@ class NUFFT(pyca.LinOp):
         """
         raise NotImplementedError
 
+    def complex_matrix(self, xp: pyct.ArrayModule = np) -> pyct.NDArray:
+        r"""
+        Form the complex-valued matrix associated to the operator.
+
+        Parameters
+        ----------
+        xp: ArrayModule
+            Which array module to use to represent the output.
+
+        Returns
+        -------
+        NDArray
+            * (N.prod(), M) complex-valued array for type-1 NUFFT.
+            * (M, N.prod()) complex-valued array for type-2 NUFFT.
+            * (M, N) complex-valued array for type-3 NUFFT.
+        Examples
+        --------
+        .. code-block:: python3
+
+           import numpy as np
+           import pycsou.operator.linop as pycl
+           import pycsou.runtime as pycrt
+           import pycsou.util as pycu
+
+           rng = np.random.default_rng(0)
+           D, M, N = 1, 2, 3  # D denotes the dimension of the data
+           x = np.fmod(rng.normal(size=(M, D)), 2 * np.pi)
+           A = pycl.NUFFT.type1(
+                   x,
+                   N,
+                   isign=-1,
+                   eps=1e-3,
+               )
+           A.complex_matrix()
+           >> array([[0.99210636+0.12539922j, 0.99128684-0.13172096j],
+                     [1.        +0.j        , 1.        +0.j        ],
+                     [0.99210636-0.12539922j, 0.99128684+0.13172096j]])
+
+        Warnings
+        --------
+        This method is mainly for debugging/benchmarking purposes and must be used sparingly/carefully as forming the complex
+        matrix associated to the NUFFT operator can be slow and very memory intensive in high dimensional settings.
+        """
+        raise NotImplementedError
+
+    def mesh(self, xp: pyct.ArrayModule = np):
+        r"""
+        For type-1 and type-2 NUFFTs, form the transform's meshgrid :math:`\mathcal{I}_{N_1\times\cdots\times N_d} =\mathcal{I}_{N_1}\times \cdots \times \mathcal{I}_{N_d}  \subset \mathbb{Z}^d`.
+
+        Parameters
+        ----------
+        xp: ArrayModule
+            Which array module to use to represent the output.
+
+        Returns
+        -------
+        NDArray
+            (d, N1, ..., Nd) meshgrid following Numpy's :py:func:`~numpy.meshgrid` convention with ``'ij'`` indexing.
+            If ``modeord=1`` was passed as optional keyword argument to the class constructor, all axes of the grid are "`ifftshifted <https://numpy.org/doc/stable/reference/generated/numpy.fft.ifftshift.html>`_"
+            to reflect the different ordering convention.
+
+        Examples
+        --------
+        .. code-block:: python3
+
+           import numpy as np
+           import pycsou.operator.linop as pycl
+           import pycsou.runtime as pycrt
+           import pycsou.util as pycu
+
+           rng = np.random.default_rng(0)
+           D, M, N = 1, 2, 3  # D denotes the dimension of the data
+           x = np.fmod(rng.normal(size=(M, D)), 2 * np.pi)
+           A = pycl.NUFFT.type1(
+                   x,
+                   N,
+                   isign=-1,
+                   eps=1e-3,
+               )
+           A.mesh()
+           >> array([[-1.,  0.,  1.]])
+        """
+        raise NotImplementedError
+
     @staticmethod
     def _as_canonical_coordinate(x: pyct.NDArray) -> pyct.NDArray:
         if (N_dim := x.ndim) == 1:
@@ -647,6 +733,9 @@ class _NUFFT1(NUFFT):
         self._M, self._D = kwargs["x"].shape  # Useful constants
         self._N = kwargs["N"]
         self._n = self._plan["fw"].n_trans
+        self._x = kwargs["x"]
+        self._isign = kwargs["isign"]
+        self._modeord = kwargs.get("modeord", 0)
 
         sh_op = [2 * np.prod(self._N), 2 * self._M]
         if self._real_output:
@@ -659,7 +748,7 @@ class _NUFFT1(NUFFT):
     @classmethod
     def _sanitize_init_kwargs(cls, **kwargs) -> dict:
         kwargs = kwargs.copy()
-        for k in ("nufft_type", "n_modes_or_dim", "dtype", "modeord"):
+        for k in ("nufft_type", "n_modes_or_dim", "dtype"):
             kwargs.pop(k, None)
         x = kwargs["x"] = cls._as_canonical_coordinate(kwargs["x"])
         N = kwargs["N"] = cls._as_canonical_mode(kwargs["N"])
@@ -685,7 +774,7 @@ class _NUFFT1(NUFFT):
             eps=kwargs.pop("eps"),
             n_trans=kwargs.pop("n_trans", 1),
             isign=kwargs.pop("isign"),
-            modeord=0,
+            modeord=kwargs.pop("modeord", 0),
             **kwargs,
         )
         plan.setpts(
@@ -720,7 +809,7 @@ class _NUFFT1(NUFFT):
             eps=kwargs.pop("eps"),
             n_trans=kwargs.pop("n_trans", 1),
             isign=-kwargs.pop("isign"),
-            modeord=0,
+            modeord=kwargs.pop("modeord", 0),
             **kwargs,
         )
         plan.setpts(
@@ -848,6 +937,26 @@ class _NUFFT1(NUFFT):
 
         return out.real if self._real_input else pycu.view_as_real(out)
 
+    @pycrt.enforce_precision()
+    def mesh(self, xp: pyct.ArrayModule = np) -> pyct.NDArray:
+        mesh = xp.stack(xp.meshgrid(*[xp.arange(-(m // 2), (m - 1) // 2 + 1) for m in self._N], indexing="ij"), axis=0)
+        if self._modeord:
+            mesh = xp.stack([xp.fft.ifftshift(m, axes=i) for i, m in enumerate(mesh)])
+        return mesh
+
+    def complex_matrix(self, xp: pyct.ArrayModule = np) -> pyct.NDArray:
+        A = self.mesh(xp)
+        B = A.reshape((self._D, -1)).T
+        return xp.exp(1j * xp.sign(self._isign) * B @ self._x.T).astype(pycrt.getPrecision().complex.value)
+
+    def asarray(
+        self,
+        xp: pyct.ArrayModule = np,
+        dtype: typ.Optional[type] = None,
+    ) -> pyct.NDArray:
+        cmat = self.complex_matrix(xp=xp).astype(pycrt.getPrecision().complex.value)
+        return pycu.view_as_real_mat(cmat, real_input=self._real_input, real_output=self._real_output)
+
 
 class _NUFFT3(NUFFT):
     def __init__(self, **kwargs):
@@ -859,6 +968,9 @@ class _NUFFT3(NUFFT):
         self._M, self._D = kwargs["x"].shape  # Useful constants
         self._N, _ = kwargs["z"].shape
         self._n = self._plan["fw"].n_trans
+        self._isign = kwargs["isign"]
+        self._x = kwargs["x"]
+        self._z = kwargs["z"]
 
         sh_op = [2 * self._N, 2 * self._M]
         if self._real:
@@ -869,7 +981,7 @@ class _NUFFT3(NUFFT):
     @classmethod
     def _sanitize_init_kwargs(cls, **kwargs) -> dict:
         kwargs = kwargs.copy()
-        for k in ("nufft_type", "n_modes_or_dim", "dtype", "modeord"):
+        for k in ("nufft_type", "n_modes_or_dim", "dtype"):
             kwargs.pop(k, None)
         x = kwargs["x"] = cls._as_canonical_coordinate(kwargs["x"])
         z = kwargs["z"] = cls._as_canonical_coordinate(kwargs["z"])
@@ -897,9 +1009,8 @@ class _NUFFT3(NUFFT):
             **dict(
                 zip(
                     "xyz"[:N_dim] + "stu"[:N_dim],
-                    tuple(
-                        _.astype(pycrt.getPrecision().value) for _ in pycu.compute(*x.T[:N_dim], *z.T[:N_dim])
-                    ),  # astype() is needed here because dask.distributed passes a dtype that FINUFFT does not recognize as the builtin np.dtype('float64') (== passes but not "is" which FINUFFT uses)
+                    tuple(_.astype(pycrt.getPrecision().value) for _ in pycu.compute(*x.T[:N_dim], *z.T[:N_dim])),
+                    # astype() is needed here because dask.distributed passes a dtype that FINUFFT does not recognize as the builtin np.dtype('float64') (== passes but not "is" which FINUFFT uses)
                 )
             ),
         )
@@ -938,9 +1049,8 @@ class _NUFFT3(NUFFT):
             **dict(
                 zip(
                     "xyz"[:N_dim] + "stu"[:N_dim],
-                    tuple(
-                        _.astype(pycrt.getPrecision().value) for _ in pycu.compute(*z.T[:N_dim], *x.T[:N_dim])
-                    ),  # astype() is needed here because dask.distributed passes a dtype that FINUFFT does not recognize as the builtin np.dtype('float64') (== passes but not "is" which FINUFFT uses)
+                    tuple(_.astype(pycrt.getPrecision().value) for _ in pycu.compute(*z.T[:N_dim], *x.T[:N_dim])),
+                    # astype() is needed here because dask.distributed passes a dtype that FINUFFT does not recognize as the builtin np.dtype('float64') (== passes but not "is" which FINUFFT uses)
                 )
             ),
         )
@@ -1048,3 +1158,14 @@ class _NUFFT3(NUFFT):
             blks = [self._bw(blk) for blk in data]
             out = self._postprocess(blks, N, sh)
         return out.real if self._real else pycu.view_as_real(out)
+
+    def complex_matrix(self, xp: pyct.ArrayModule = np) -> pyct.NDArray:
+        return xp.exp(1j * xp.sign(self._isign) * self._z @ self._x.T).astype(pycrt.getPrecision().complex.value)
+
+    def asarray(
+        self,
+        xp: pyct.ArrayModule = np,
+        dtype: typ.Optional[type] = None,
+    ) -> pyct.NDArray:
+        cmat = self.complex_matrix(xp=xp).astype(pycrt.getPrecision().complex.value)
+        return pycu.view_as_real_mat(cmat, real_input=self._real)

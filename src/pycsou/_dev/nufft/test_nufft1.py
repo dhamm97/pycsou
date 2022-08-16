@@ -17,7 +17,7 @@ def NUFFT1_array(x, N, isign) -> np.ndarray:
 
 
 if __name__ == "__main__":
-    use_dask = True
+    use_dask = False
     real = True
 
     rng = np.random.default_rng(0)
@@ -29,7 +29,7 @@ if __name__ == "__main__":
 
     with pycrt.Precision(pycrt.Width.DOUBLE):
         N_trans, isign = 40, -1
-        A = nufft.NUFFT.type1(x, N, n_trans=N_trans, isign=isign, eps=1e-7, real=real)
+        A = nufft.NUFFT.type1(x, N, n_trans=N_trans, isign=isign, eps=1e-7, real=real, modeord=1)
         B = NUFFT1_array(x, N, isign)
 
         arr = rng.normal(size=(15, N_trans, M))
@@ -54,3 +54,8 @@ if __name__ == "__main__":
             res_fw, res_bw = pycu.compute(res_fw, res_bw)
         print(res_fw)
         print(res_bw)
+
+        # Test complex matrix:
+        C = A.complex_matrix(xp=np)
+        D = pycu.view_as_complex(A.apply(np.eye(A.dim))).T
+        print(np.linalg.norm(C - D))
