@@ -1,4 +1,5 @@
 import collections.abc as cabc
+import types
 import typing as typ
 
 import dask.array as da
@@ -379,9 +380,15 @@ class NUFFT(pyca.LinOp):
             real_output=real,
             **kwargs,
         )
-        op = _NUFFT1(**init_kwargs).squeeze().T
-        op.complex_matrix = lambda _, xp: op.complex_matrix(_, xp).conj().T
-        return op
+
+        op = _NUFFT1(**init_kwargs)
+
+        def adj_complex_matrix(_, xp=np):
+            return op.complex_matrix(xp).conj().T
+
+        adj = op.squeeze().T
+        adj.complex_matrix = types.MethodType(adj_complex_matrix, adj)
+        return adj
 
     @staticmethod
     @pycrt.enforce_precision(i=("x", "z"), o=False, allow_None=False)
@@ -888,6 +895,7 @@ class _NUFFT1(NUFFT):
                 meta=data._meta,
                 lock=lock,
             )
+            out = out.reshape(-1, sh[-1])[:N].reshape(sh)
         else:
             blks = [self._fw(blk) for blk in data]
             out = self._postprocess(blks, N, sh)
@@ -960,6 +968,7 @@ class _NUFFT1(NUFFT):
                 meta=data._meta,
                 lock=lock,
             )
+            out = out.reshape(-1, sh[-1])[:N].reshape(sh)
         else:
             blks = [self._bw(blk) for blk in data]
             out = self._postprocess(blks, N, sh)
@@ -987,8 +996,9 @@ class _NUFFT1(NUFFT):
 
     def complex_matrix(self, xp: pyct.ArrayModule = np) -> pyct.NDArray:
         A = self.mesh(xp)
-        B = A.reshape((-1, self._D))
-        return xp.exp(1j * xp.sign(self._isign) * B @ self._x.T).astype(pycrt.getPrecision().complex.value)
+        A = A.reshape((-1, self._D))
+        A = xp.exp(1j * xp.sign(self._isign) * A @ self._x.T).astype(pycrt.getPrecision().complex.value)
+        return A
 
     def asarray(
         self,
@@ -1161,6 +1171,7 @@ class _NUFFT3(NUFFT):
                 meta=data._meta,
                 lock=lock,
             )
+            out = out.reshape(-1, sh[-1])[:N].reshape(sh)
         else:
             blks = [self._fw(blk) for blk in data]
             out = self._postprocess(blks, N, sh)
@@ -1203,6 +1214,7 @@ class _NUFFT3(NUFFT):
                 meta=data._meta,
                 lock=lock,
             )
+            out = out.reshape(-1, sh[-1])[:N].reshape(sh)
         else:
             blks = [self._bw(blk) for blk in data]
             out = self._postprocess(blks, N, sh)

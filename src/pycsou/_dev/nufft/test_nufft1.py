@@ -5,11 +5,10 @@ import numpy as np
 import pycsou.operator.linop.nufft as nufft
 import pycsou.runtime as pycrt
 import pycsou.util as pycu
-import pycsou.util.ptype as pyct
 
 if __name__ == "__main__":
     use_dask = True
-    nufft_kwargs = dict(real=True, eps=1e-3, isign=-1, n_trans=40, nthreads=0, modeord=0)
+    nufft_kwargs = dict(real=True, eps=1e-4, isign=-1, n_trans=5, nthreads=0, modeord=0)
 
     rng = np.random.default_rng(0)
     D, M, N = 2, 200, 5
