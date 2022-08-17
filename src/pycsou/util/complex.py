@@ -1,5 +1,7 @@
 import typing as typ
 
+import dask.array as da
+
 import pycsou.runtime as pycrt
 import pycsou.util.array_module as pyca
 import pycsou.util.ptype as pyct
@@ -194,32 +196,34 @@ def view_as_real_mat(cmat: pyct.NDArray, real_input: bool = False, real_output: 
 
     xp = pyca.get_array_module(cmat)
     rmat = xp.zeros((2 * cmat.shape[0], 2 * cmat.shape[1]), dtype=r_dtype)
+    rsh = rmat.shape
+    rmat = rmat.ravel()
     ri, rj, rrij, crij, ccij, rcij = _rc_masks(cmat, xp, c_dtype, r_dtype)
-    rmat[rrij] = cmat.real.ravel()
-    rmat[crij] = cmat.imag.ravel()
-    rmat[ccij] = cmat.real.ravel()
-    rmat[rcij] = -cmat.imag.ravel()
-
+    rmat[rrij.ravel()] = cmat.real.ravel()
+    rmat[crij.ravel()] = cmat.imag.ravel()
+    rmat[ccij.ravel()] = cmat.real.ravel()
+    rmat[rcij.ravel()] = -cmat.imag.ravel()
+    rmat = rmat.reshape(rsh)
     if real_input:
-        rmat = rmat[:, rj.astype(bool)]
+        rmat = rmat[:, rj]
     if real_output:
-        rmat = rmat[ri.astype(bool), :]
+        rmat = rmat[ri, :]
 
     return rmat
 
 
 def _rc_masks(cmat, xp, c_dtype, r_dtype) -> typ.Tuple:
-    ri, ci = xp.ones(cmat.shape[0], dtype=c_dtype).view(r_dtype), (1j * xp.ones(cmat.shape[0], dtype=c_dtype)).view(
-        r_dtype
-    )
-    rj, cj = xp.ones(cmat.shape[1], dtype=c_dtype).view(r_dtype), (1j * xp.ones(cmat.shape[1], dtype=c_dtype)).view(
-        r_dtype
-    )
+    ri, ci = xp.ones(cmat.shape[0], dtype=c_dtype).view(r_dtype).astype(bool), (
+        1j * xp.ones(cmat.shape[0], dtype=c_dtype)
+    ).view(r_dtype).astype(bool)
+    rj, cj = xp.ones(cmat.shape[1], dtype=c_dtype).view(r_dtype).astype(bool), (
+        1j * xp.ones(cmat.shape[1], dtype=c_dtype)
+    ).view(r_dtype).astype(bool)
     rrij = (ri[:, None] * rj[None, :]).astype(bool)
     crij = (ci[:, None] * rj[None, :]).astype(bool)
     ccij = (ci[:, None] * cj[None, :]).astype(bool)
     rcij = (ri[:, None] * cj[None, :]).astype(bool)
-    return ri, rj, rrij, crij, ccij, rcij
+    return pyca.compute(ri, rj, rrij, crij, ccij, rcij)
 
 
 def view_as_complex_mat(rmat: pyct.NDArray, real_input: bool = False, real_output: bool = False):
@@ -285,36 +289,30 @@ def view_as_complex_mat(rmat: pyct.NDArray, real_input: bool = False, real_outpu
 
     xp = pyca.get_array_module(rmat)
     if real_input and real_output:
-        cmat = (rmat + 0j).astype(c_dtype)
-    elif real_input and not real_output:
-        assert rmat.shape[0] % 2 == 0, "First array dimension should be even-valued."
-        cmat = xp.zeros((rmat.shape[0] // 2, rmat.shape[1]), dtype=c_dtype)
-        _, rj, rrij, crij, _, _ = _rc_masks(cmat, xp, c_dtype, r_dtype)
-        rrij, crij = rrij[:, rj.astype(bool)], crij[:, rj.astype(bool)]
-        rpart = rmat[rrij].reshape(cmat.shape).astype(c_dtype)
-        ipart = rmat[crij].reshape(cmat.shape).astype(c_dtype)
-        cmat = (rpart + 1j * ipart).astype(c_dtype)
-    elif not real_input and real_output:
-        assert rmat.shape[1] % 2 == 0, "Last array dimension should be even-valued."
-        cmat = xp.zeros((rmat.shape[0], rmat.shape[1] // 2), dtype=c_dtype)
-        ri, _, rrij, _, _, rcij = _rc_masks(cmat, xp, c_dtype, r_dtype)
-        rrij, rcij = rrij[ri.astype(bool), :], rcij[ri.astype(bool), :]
-        rpart = rmat[rrij].reshape(cmat.shape).astype(c_dtype)
-        ipart = -rmat[rcij].reshape(cmat.shape).astype(c_dtype)
-        cmat = (rpart + 1j * ipart).astype(c_dtype)
+        return (rmat + 0j).astype(c_dtype)
     else:
-        assert rmat.shape[0] % 2 == 0 and rmat.shape[1] % 2 == 0, "Both array dimensions should be even-valued."
-        cmat = xp.zeros((rmat.shape[0] // 2, rmat.shape[1] // 2), dtype=c_dtype)
-        _, _, rrij, crij, _, _ = _rc_masks(cmat, xp, c_dtype, r_dtype)
-        rpart = rmat[rrij].reshape(cmat.shape).astype(c_dtype)
-        ipart = rmat[crij].reshape(cmat.shape).astype(c_dtype)
-        cmat = (rpart + 1j * ipart).astype(c_dtype)
-    return cmat
-
-
-if __name__ == "__main__":
-    import numpy as np
-
-    cmat = np.arange(6).reshape(2, 3) + 1j * (np.arange(6) + 2).reshape(2, 3)
-    rmat = view_as_real_mat(cmat, real_output=True)
-    cmat2 = view_as_complex_mat(rmat, real_output=True)
+        if real_input and not real_output:
+            assert rmat.shape[0] % 2 == 0, "First array dimension should be even-valued."
+            cmat = xp.zeros((rmat.shape[0] // 2, rmat.shape[1]), dtype=c_dtype)
+            _, rj, rrij, crij, _, _ = _rc_masks(cmat, xp, c_dtype, r_dtype)
+            rrij, crij = rrij[:, rj], crij[:, rj]
+            rpart = rmat[rrij]
+            ipart = rmat[crij]
+        elif not real_input and real_output:
+            assert rmat.shape[1] % 2 == 0, "Last array dimension should be even-valued."
+            cmat = xp.zeros((rmat.shape[0], rmat.shape[1] // 2), dtype=c_dtype)
+            ri, _, rrij, _, _, rcij = _rc_masks(cmat, xp, c_dtype, r_dtype)
+            rrij, rcij = rrij[ri, :], rcij[ri, :]
+            rpart = rmat[rrij]
+            ipart = -rmat[rcij]
+        else:
+            assert rmat.shape[0] % 2 == 0 and rmat.shape[1] % 2 == 0, "Both array dimensions should be even-valued."
+            cmat = xp.zeros((rmat.shape[0] // 2, rmat.shape[1] // 2), dtype=c_dtype)
+            _, _, rrij, crij, _, _ = _rc_masks(cmat, xp, c_dtype, r_dtype)
+            rpart = rmat[rrij]
+            ipart = rmat[crij]
+        if isinstance(rpart, da.Array):
+            rpart.compute_chunk_sizes()
+            ipart.compute_chunk_sizes()
+        cmat = (rpart + 1j * ipart).reshape(cmat.shape).astype(c_dtype)
+        return cmat
