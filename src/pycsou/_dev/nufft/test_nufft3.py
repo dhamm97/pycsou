@@ -12,7 +12,7 @@ def NUFFT3_array(x, z, isign) -> np.ndarray:
 
 
 if __name__ == "__main__":
-    use_dask = True
+    use_dask = False
     real = False
 
     rng = np.random.default_rng(0)
@@ -24,7 +24,7 @@ if __name__ == "__main__":
         x = da.from_array(x)
         z = da.from_array(z)
 
-    with pycrt.Precision(pycrt.Width.SINGLE):
+    with pycrt.Precision(pycrt.Width.DOUBLE):
         N_trans, isign = 60, -1
         A = nufft.NUFFT.type3(x, z, n_trans=N_trans, isign=isign, eps=1e-5, real=real)
         B = NUFFT3_array(x, z, isign)
@@ -51,3 +51,11 @@ if __name__ == "__main__":
             res_fw, res_bw = pycu.compute(res_fw, res_bw)
         print(res_fw)
         print(res_bw)
+
+        # Test complex matrix:
+        C = A.complex_matrix(xp=np)
+        E = A.asarray(xp=np)
+        E_out_fw = np.tensordot(pycu.view_as_real(arr), E, axes=[[2], [1]])
+        print(
+            np.linalg.norm(E_out_fw - A.apply(pycu.view_as_real(arr))) / np.linalg.norm(A.apply(pycu.view_as_real(arr)))
+        )

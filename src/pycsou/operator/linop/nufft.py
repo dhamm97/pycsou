@@ -4,6 +4,7 @@ import typing as typ
 import dask.array as da
 import dask.distributed as dad
 import finufft
+import numba as nb
 import numpy as np
 
 import pycsou.abc as pyca
@@ -582,7 +583,7 @@ class NUFFT(pyca.LinOp):
         Returns
         -------
         NDArray
-            (d, N1, ..., Nd) meshgrid following Numpy's :py:func:`~numpy.meshgrid` convention with ``'ij'`` indexing.
+            (N1, ..., Nd, d) meshgrid following Numpy's :py:func:`~numpy.meshgrid` convention with ``'ij'`` indexing.
             If ``modeord=1`` was passed as optional keyword argument to the class constructor, all axes of the grid are "`ifftshifted <https://numpy.org/doc/stable/reference/generated/numpy.fft.ifftshift.html>`_"
             to reflect the different ordering convention.
 
@@ -592,8 +593,6 @@ class NUFFT(pyca.LinOp):
 
            import numpy as np
            import pycsou.operator.linop as pycl
-           import pycsou.runtime as pycrt
-           import pycsou.util as pycu
 
            rng = np.random.default_rng(0)
            D, M, N = 1, 2, 3  # D denotes the dimension of the data
@@ -726,13 +725,17 @@ class _NUFFT1(NUFFT):
     def __init__(self, **kwargs):
         self._real_input = kwargs.pop("real_input")
         self._real_output = kwargs.pop("real_output")
-        self._plan = dict(
-            fw=self._plan_fw(**kwargs),
-            bw=self._plan_bw(**kwargs),
-        )
+        self._eps = kwargs["eps"]
+        if self._eps > 0:
+            self._plan = dict(
+                fw=self._plan_fw(**kwargs),
+                bw=self._plan_bw(**kwargs),
+            )
+            self._n = self._plan["fw"].n_trans
+        else:
+            self._plan = None
         self._M, self._D = kwargs["x"].shape  # Useful constants
         self._N = kwargs["N"]
-        self._n = self._plan["fw"].n_trans
         self._x = kwargs["x"]
         self._isign = kwargs["isign"]
         self._modeord = kwargs.get("modeord", 0)
@@ -858,18 +861,24 @@ class _NUFFT1(NUFFT):
         else:
             arr = pycu.view_as_complex(arr)
 
-        data, N, sh = self._preprocess(arr, self._n, np.prod(self._N))
+        if self._eps > 0:
+            out = self._nufft_apply(arr)
+        else:
+            out = self._nudft_apply(arr)
+        return out.real if self._real_output else pycu.view_as_real(out)
 
+    def _nufft_apply(self, arr: pyct.NDArray) -> pyct.NDArray:
+        data, N, sh = self._preprocess(arr, self._n, np.prod(self._N))
         if isinstance(data, da.Array):
             try:
                 lock = dad.Lock()  # Use lock to avoid race condition because of the shared FFTW resources.
             except:
                 error_message = r"""
-                The NUFFT operator requires Dask's distributed scheduler in multi-threading mode (other schedulers are not accepted).
-                Start a client and point it to the scheduler address:
-                    from dask.distributed import Client
-                    client = Client('ip-addr-of-scheduler:8786', processes=False)
-                """
+                        The NUFFT operator requires Dask's distributed scheduler in multi-threading mode (other schedulers are not accepted).
+                        Start a client and point it to the scheduler address:
+                            from dask.distributed import Client
+                            client = Client('ip-addr-of-scheduler:8786', processes=False)
+                        """
                 raise ValueError(error_message)
             out = data.rechunk(chunks=(1, -1, -1)).map_blocks(
                 func=self._fw_locked,
@@ -882,8 +891,20 @@ class _NUFFT1(NUFFT):
         else:
             blks = [self._fw(blk) for blk in data]
             out = self._postprocess(blks, N, sh)
+        return out
 
-        return out.real if self._real_output else pycu.view_as_real(out)
+    def _nudft_apply(self, arr: pyct.NDArray) -> pyct.NDArray:
+        if isinstance(arr, da.Array):
+            out = da.tensordot(arr, self.complex_matrix(pycu.get_array_module(arr)), axes=(-1, -1))
+        else:
+            out = _nudft1(
+                w=arr,
+                x=self._x,
+                mesh=self.mesh().reshape(-1, self._D),
+                isign=self._isign,
+                dtype=pycrt.getPrecision().complex.value,
+            )
+        return out
 
     @pycrt.enforce_precision("arr")
     def adjoint(self, arr: pyct.NDArray) -> pyct.NDArray:
@@ -910,6 +931,14 @@ class _NUFFT1(NUFFT):
         else:
             arr = pycu.view_as_complex(arr)
 
+        if self._eps > 0:
+            out = self._nufft_adjoint(arr)
+        else:
+            out = self._nudft_adjoint(arr)
+
+        return out.real if self._real_input else pycu.view_as_real(out)
+
+    def _nufft_adjoint(self, arr: pyct.NDArray) -> pyct.NDArray:
         data, N, sh = self._preprocess(arr, self._n, self._M)
 
         if isinstance(data, da.Array):
@@ -917,11 +946,11 @@ class _NUFFT1(NUFFT):
                 lock = dad.Lock()  # Use lock to avoid race condition because of the shared FFTW resources.
             except:
                 error_message = r"""
-                The NUFFT operator requires Dask's distributed scheduler in multi-threading mode (other schedulers are not accepted).
-                Start a client and point it to the scheduler address:
-                    from dask.distributed import Client
-                    client = Client('ip-addr-of-scheduler:8786', processes=False)
-                """
+                        The NUFFT operator requires Dask's distributed scheduler in multi-threading mode (other schedulers are not accepted).
+                        Start a client and point it to the scheduler address:
+                            from dask.distributed import Client
+                            client = Client('ip-addr-of-scheduler:8786', processes=False)
+                        """
                 raise ValueError(error_message)
             out = data.rechunk(chunks=(1, -1, -1)).map_blocks(
                 func=self._bw_locked,
@@ -934,19 +963,31 @@ class _NUFFT1(NUFFT):
         else:
             blks = [self._bw(blk) for blk in data]
             out = self._postprocess(blks, N, sh)
+        return out
 
-        return out.real if self._real_input else pycu.view_as_real(out)
+    def _nudft_adjoint(self, arr: pyct.NDArray) -> pyct.NDArray:
+        if isinstance(arr, da.Array):
+            out = da.tensordot(arr, self.complex_matrix(pycu.get_array_module(arr)).conj().T, axes=(-1, -1))
+        else:
+            out = _nudft2(
+                w=arr,
+                x=self._x,
+                mesh=self.mesh().reshape(-1, self._D),
+                isign=-self._isign,
+                dtype=pycrt.getPrecision().complex.value,
+            )
+        return out
 
     @pycrt.enforce_precision()
     def mesh(self, xp: pyct.ArrayModule = np) -> pyct.NDArray:
-        mesh = xp.stack(xp.meshgrid(*[xp.arange(-(m // 2), (m - 1) // 2 + 1) for m in self._N], indexing="ij"), axis=0)
+        mesh = xp.stack(xp.meshgrid(*[xp.arange(-(m // 2), (m - 1) // 2 + 1) for m in self._N], indexing="ij"), axis=-1)
         if self._modeord:
-            mesh = xp.stack([xp.fft.ifftshift(m, axes=i) for i, m in enumerate(mesh)])
+            mesh = xp.stack([xp.fft.ifftshift(mesh[..., i], axes=i) for i in range(mesh.shape[-1])], axis=-1)
         return mesh
 
     def complex_matrix(self, xp: pyct.ArrayModule = np) -> pyct.NDArray:
         A = self.mesh(xp)
-        B = A.reshape((self._D, -1)).T
+        B = A.reshape((-1, self._D))
         return xp.exp(1j * xp.sign(self._isign) * B @ self._x.T).astype(pycrt.getPrecision().complex.value)
 
     def asarray(
@@ -1185,3 +1226,51 @@ class _NUFFT3(NUFFT):
 
         cmat = self.complex_matrix(xp=xp).astype(width.complex.value)
         return pycu.view_as_real_mat(cmat, real_input=self._real).astype(dtype)
+
+
+@nb.njit(parallel=True, fastmath=True, nogil=True)
+def _nudft1_cpu(
+    w: pyct.NDArray, x: pyct.NDArray, mesh: pyct.NDArray, *, isign: typ.Literal[1, -1], dtype: np.dtype
+) -> pyct.NDArray:
+    out = np.zeros(w.shape[:-1] + (mesh.shape[0],), dtype=dtype)
+    for n in nb.prange(mesh.shape[0]):
+        for j in nb.prange(x.shape[0]):
+            out[..., n] += w[..., j] * np.exp(isign * 1j * np.dot(x[j, :], mesh[n, :]))
+    return out
+
+
+def _nudft1_gpu():
+    pass
+
+
+@pycu.redirect("w", NUMPY=_nudft1_cpu, CUPY=_nudft1_gpu)
+def _nudft1(
+    w: pyct.NDArray, x: pyct.NDArray, mesh: pyct.NDArray, *, isign: typ.Literal[1, -1], dtype: np.dtype
+) -> pyct.NDArray:
+    raise NotImplementedError
+
+
+@nb.njit(parallel=True, fastmath=True, nogil=True)
+def _nudft2_cpu(
+    w: pyct.NDArray, x: pyct.NDArray, mesh: pyct.NDArray, isign: typ.Literal[1, -1], dtype: np.dtype
+) -> pyct.NDArray:
+    out = np.zeros(w.shape[:-1] + (x.shape[0],), dtype=dtype)
+    for j in nb.prange(x.shape[0]):
+        for n in nb.prange(mesh.shape[0]):
+            out[..., j] += w[..., n] * np.exp(isign * 1j * np.dot(x[j, :], mesh[n, :]))
+    return out
+
+
+def _nudft2_gpu():
+    pass
+
+
+@pycu.redirect("w", NUMPY=_nudft2_cpu, CUPY=_nudft2_gpu)
+def _nudft2(
+    w: pyct.NDArray, x: pyct.NDArray, mesh: pyct.NDArray, isign: typ.Literal[1, -1], dtype: np.dtype
+) -> pyct.NDArray:
+    pass
+
+
+def _nudft3():
+    pass
