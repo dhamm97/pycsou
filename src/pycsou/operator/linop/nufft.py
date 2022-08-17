@@ -1301,7 +1301,7 @@ def _nudft_gpu(
     raise NotImplementedError
 
 
-@pycu.redirect("w", NUMPY=_nudft_cpu, CUPY=_nudft_gpu)
+@pycu.redirect("weights", NUMPY=_nudft_cpu, CUPY=_nudft_gpu)
 def _nudft(
     weights: pyct.NDArray, source: pyct.NDArray, target: pyct.NDArray, *, isign: typ.Literal[1, -1], dtype: np.dtype
 ) -> pyct.NDArray:

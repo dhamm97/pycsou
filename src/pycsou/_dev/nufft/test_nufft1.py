@@ -8,7 +8,7 @@ import pycsou.util as pycu
 
 if __name__ == "__main__":
     use_dask = True
-    nufft_kwargs = dict(real=True, eps=1e-4, isign=-1, n_trans=5, nthreads=0, modeord=0)
+    nufft_kwargs = dict(real=False, eps=0, isign=-1, n_trans=5, nthreads=0, modeord=1)
 
     rng = np.random.default_rng(0)
     D, M, N = 2, 200, 5
@@ -18,7 +18,7 @@ if __name__ == "__main__":
         x = da.from_array(x)
 
     xp = pycu.get_array_module(x)
-    with pycrt.Precision(pycrt.Width.DOUBLE):
+    with pycrt.Precision(pycrt.Width.SINGLE):
         A = nufft.NUFFT.type1(x, N, **nufft_kwargs)
         cB = A.complex_matrix(xp)
         rB = A.asarray(xp)

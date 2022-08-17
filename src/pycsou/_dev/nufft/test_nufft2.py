@@ -8,7 +8,7 @@ import pycsou.util as pycu
 
 if __name__ == "__main__":
     use_dask = False
-    nufft_kwargs = dict(real=False, eps=1e-6, isign=1, n_trans=6, nthreads=0, modeord=1)
+    nufft_kwargs = dict(real=False, eps=0, isign=1, n_trans=6, nthreads=0, modeord=1)
 
     rng = np.random.default_rng(0)
     D, M, N = 2, 200, 5
