@@ -71,7 +71,7 @@ class NUFFT(pyca.LinOp):
 
 
     Then the NUFFT operators approximate, up to a requested relative accuracy
-    :math:`\varepsilon>0`, the following exponential sums:
+    :math:`\varepsilon\geq 0`, [#]_ the following exponential sums:
 
     .. math::
 
@@ -198,6 +198,7 @@ class NUFFT(pyca.LinOp):
         One implication of this implementation is that chunks are processed serially one after the other, while NUFFT computations within each chunk are multithreaded.
         Note moreover that **multiprocessing is currently not available** due to serialization issues of FINUFFT's C routines (will be fixed in the future).
 
+    .. [#] :math:`\varepsilon= 0` means that no approximation is performed: the exponential sums are naively computed by direct evaluation.
     .. [#] FINUFFT uses the following rule of thumb:
            for a given dimension, if the magnitude of the center is less than 10% of half the
            peak-to-peak distance, then the data is considered well-centered and no fix is performed.
@@ -237,7 +238,8 @@ class NUFFT(pyca.LinOp):
         isign: 1 | -1
             Sign :math:`\sigma` of the transform.
         eps: float
-            Requested relative accuracy (defaults to 1e-4).
+            Requested relative accuracy :math:`\varepsilon\geq 0` (defaults to 1e-4). If ``eps=0``, the NUFFT is computed exactly by
+            direct evaluation of the exponential sum via a Numba JIT-compiled kernel.
         real: bool
             If ``True``, assumes ``.apply()`` takes (..., M) inputs.
             If ``False``, then ``.apply()`` takes (..., 2M) inputs.
@@ -319,7 +321,8 @@ class NUFFT(pyca.LinOp):
         isign: 1 | -1
             Sign :math:`\sigma` of the transform.
         eps: float
-            Requested relative accuracy (defaults to 1e-4).
+            Requested relative accuracy :math:`\varepsilon\geq 0` (defaults to 1e-4). If ``eps=0``, the NUFFT is computed exactly by
+            direct evaluation of the exponential sum via a Numba JIT-compiled kernel.
         real: bool
             If ``True``, assumes ``.apply()`` takes (..., N.prod()) inputs.
             If ``False``, then ``.apply()`` takes (..., 2N.prod()) inputs.
@@ -412,7 +415,8 @@ class NUFFT(pyca.LinOp):
         isign: 1 | -1
             Sign :math:`\sigma` of the transform.
         eps: float
-            Requested relative accuracy (defaults to 1e-4).
+            Requested relative accuracy :math:`\varepsilon\geq 0` (defaults to 1e-4). If ``eps=0``, the NUFFT is computed exactly by
+            direct evaluation of the exponential sum via a Numba JIT-compiled kernel.
         real: bool
             If ``True``, assumes ``.apply()`` takes (..., M) inputs.
             If ``False``, then ``.apply()`` takes (..., 2M) inputs.
