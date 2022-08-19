@@ -8,12 +8,12 @@ import pycsou.util as pycu
 
 if __name__ == "__main__":
     use_dask = False
-    nufft_kwargs = dict(real=False, eps=0, isign=1, n_trans=6, nthreads=0, modeord=1)
+    nufft_kwargs = dict(real=False, eps=1e-3, isign=1, n_trans=6, nthreads=0, modeord=1)
 
     rng = np.random.default_rng(0)
     D, M, N = 2, 200, 5
     N_full = (N,) * D if isinstance(N, int) else N
-    x = np.fmod(rng.normal(size=(M, D)), 2 * np.pi)
+    x = 2 * np.pi * rng.random(size=(M, D)) - np.pi
     if use_dask:
         client = dad.Client(processes=False)  # processes=True yields a serialization error.
         x = da.from_array(x)

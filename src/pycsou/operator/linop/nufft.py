@@ -209,6 +209,7 @@ class NUFFT(pyca.LinOp):
     --------
     FFT, DCT, Radon
     """
+    _safetyfac = 0.976  # Safety factor for computing the kernel width.
 
     # The goal of this wrapper class is to sanitize __init__() inputs.
 
@@ -582,14 +583,27 @@ class NUFFT(pyca.LinOp):
         """
         raise NotImplementedError
 
-    def mesh(self, xp: pyct.ArrayModule = np):
+    def mesh(
+        self,
+        xp: pyct.ArrayModule = np,
+        coords: typ.Literal["normalized", "x", "z"] = "normalized",
+        upsampling: bool = False,
+    ) -> pyct.NDArray:
         r"""
-        For type-1 and type-2 NUFFTs, form the transform's meshgrid :math:`\mathcal{I}_{N_1\times\cdots\times N_d} =\mathcal{I}_{N_1}\times \cdots \times \mathcal{I}_{N_d}  \subset \mathbb{Z}^d`.
+        Return the transform's meshgrid :math:`\mathcal{I}_{N_1\times\cdots\times N_d} =\mathcal{I}_{N_1}\times \cdots \times \mathcal{I}_{N_d}`
+        in normalized (unit-spacing) or rescaled coordinates.
+
+        For the type-3 NUFFT, this method returns the meshgrid used for internal FFT computations.
 
         Parameters
         ----------
         xp: ArrayModule
             Which array module to use to represent the output.
+        coords: ['normalized', 'x', 'z']
+            Coordinates of the grid: ``'normalized'`` (canonical unity grid) or ``'x'`` (source coordinates).
+            For type-3 NUFFT, it is also possible to express the grid in target coordinates (``coords='z'``).
+        upsampling: bool
+            Whether the return the upsampled meshgrid or not (see [FINUFFT]_ for details).
 
         Returns
         -------
@@ -618,6 +632,114 @@ class NUFFT(pyca.LinOp):
            >> array([[-1.,  0.,  1.]])
         """
         raise NotImplementedError
+
+    @property
+    def fft_size(self) -> tuple[list, float]:
+        r"""
+        Size of the effective meshgrid (after upsampling and 5-smoothing) used for internal FFT computations.
+
+        Returns
+        -------
+        n: list
+            (d,) size of the meshgrid in each dimension.
+        nbytes: float
+            Size in bytes of the arrays processed by FFT.
+        """
+        raise NotImplementedError
+
+    @property
+    def kernel_width(self) -> float:
+        r"""
+        Width of the spreading/interpolation kernel.
+
+        Returns
+        -------
+        float
+            Width of the kernel.
+        """
+        if self._eps == 0:
+            raise ValueError("Kernel width is undefined for eps=0.")
+        else:
+            leps = np.abs(np.log10(self._eps))
+            u = 2 if self._upsampfac == 0 else self._upsampfac
+            sigmainv = 1 / u
+            denominator = (
+                np.pi * self._safetyfac * np.sqrt(1 - sigmainv - (sigmainv**2) * (self._safetyfac ** (-2) - 1) / 4)
+            )
+            w = np.ceil(leps / denominator) + 1
+            return pycrt.coerce(w)
+
+    @pycrt.enforce_precision("w")
+    def _ES_beta(self, w: float = 2) -> float:
+        r"""Beta parameter of the exponential semi-circle kernel."""
+        u = 2 if self._upsampfac == 0 else self._upsampfac
+        return w * np.pi * self._safetyfac * (1 - 1 / (2 * u))
+
+    @pycrt.enforce_precision(["z", "w"])
+    def ES_kernel(self, z: pyct.NDArray, w: float = 2) -> pyct.NDArray:
+        r"""
+        Exponential of semi-circle kernel used for spreading/interpolation to/from the meshgrid.
+
+        Parameters
+        ----------
+        z: NDArray
+            Query points in :math:`[-w/2, w/2]`.
+        w: float
+            Width of the kernel.
+
+        Returns
+        -------
+        y: NDArray
+            Evaluation of the kernel at the query points.
+
+        Notes
+        -----
+        The exponential of semi-circle (ES) kernel is defined as (see [FINUFFT]_ eq. (1.8)):
+
+        .. math::
+
+            \phi_\beta(z) = \begin{cases} e^{\beta(\sqrt{1-z^2}-1)}, & |z|\leq 1,\\0, &\text{otherwise.} \end{cases}
+
+        This kernel has support [-1,1] with width 2. For ``w!=2``, the current method proceeds to a dilation by :math:`2/w` so that
+        the support becomes  :math:`[-w/2,w/2]` with width :math:`w`.
+        """
+        xp = pycu.get_array_module(z)
+        z = z * 2 / w
+        beta = self._ES_beta(w)
+        y = 0 * z
+        y[xp.abs(z) <= 1] = xp.exp(beta * (xp.sqrt(1 - z[xp.abs(z) <= 1] ** 2) - 1))
+        return y
+
+    def plot_kernel(self, npix: int = 1024, **kwargs) -> tuple:
+        r"""
+        Plot the ES kernel in use on its support.
+
+        Parameters
+        ----------
+        npix: int
+            Resolution of the line plot.
+
+        Returns
+        -------
+        fig:
+            Figure handle.
+        lin:
+            Line plot handle.
+
+        Warnings
+        --------
+        Requires Matplotlib to be installed.
+        """
+        try:
+            import matplotlib.pyplot as plt
+        except:
+            raise ImportError("This method requires matplotlib to be installed.")
+        w = self.kernel_width
+        z = np.linspace(-w / 2, w / 2, npix)
+        y = self.ES_kernel(z, w)
+        fig = plt.figure()
+        (lin,) = plt.plot(z, y, **kwargs)
+        return fig, lin
 
     @staticmethod
     def _as_canonical_coordinate(x: pyct.NDArray) -> pyct.NDArray:
@@ -743,8 +865,11 @@ class _NUFFT1(NUFFT):
                 bw=self._plan_bw(**kwargs),
             )
             self._n = self._plan["fw"].n_trans
+            self._upsampfac = kwargs.get("upsampfac", 0)
         else:
             self._plan = None
+            self._n = None
+            self._upsampfac = None
         self._M, self._D = kwargs["x"].shape  # Useful constants
         self._N = kwargs["N"]
         self._x = kwargs["x"]
@@ -992,11 +1117,29 @@ class _NUFFT1(NUFFT):
         return out
 
     @pycrt.enforce_precision()
-    def mesh(self, xp: pyct.ArrayModule = np) -> pyct.NDArray:
-        mesh = xp.stack(xp.meshgrid(*[xp.arange(-(m // 2), (m - 1) // 2 + 1) for m in self._N], indexing="ij"), axis=-1)
+    def mesh(
+        self, xp: pyct.ArrayModule = np, coords: typ.Literal["normalized", "x"] = "normalized", upsampling: bool = False
+    ) -> pyct.NDArray:
+        n_modes = self.fft_size[0] if upsampling else self._N
+        h = 2 * np.pi / np.array(n_modes)
+        if coords == "normalized":
+            mesh = xp.stack(
+                xp.meshgrid(*[xp.arange(-(m // 2), (m - 1) // 2 + 1) for m in n_modes], indexing="ij"), axis=-1
+            )
+        else:
+            mesh = xp.stack(xp.meshgrid(*[xp.arange(-np.pi, np.pi, hi) for hi in h], indexing="ij"), axis=-1)
         if self._modeord:
             mesh = xp.stack([xp.fft.ifftshift(mesh[..., i], axes=i) for i in range(mesh.shape[-1])], axis=-1)
         return mesh
+
+    @property
+    def fft_size(self) -> tuple[list, float]:
+        from scipy.fftpack import next_fast_len
+
+        u = 2.0 if self._upsampfac == 0 else self._upsampfac
+        n = list(map(lambda Ni: next_fast_len(np.ceil(u * Ni).astype(int)), self._N))
+        nbytes = np.prod(n) * pycrt.coerce(np.r_[1.0]).itemsize
+        return n, nbytes
 
     def complex_matrix(self, xp: pyct.ArrayModule = np) -> pyct.NDArray:
         A = self.mesh(xp)
@@ -1031,12 +1174,18 @@ class _NUFFT3(NUFFT):
                 bw=self._plan_bw(**kwargs),
             )
             self._n = self._plan["fw"].n_trans
+            self._upsampfac = kwargs.get("upsampfac", 0)
+        else:
+            self._plan = None
+            self._n = None
+            self._upsampfac = None
         self._M, self._D = kwargs["x"].shape  # Useful constants
         self._N, _ = kwargs["z"].shape
-
-        self._isign = kwargs["isign"]
         self._x = kwargs["x"]
         self._z = kwargs["z"]
+        self._X, self._Z = pycu.compute(self._x.ptp(axis=0) / 2, self._z.ptp(axis=0) / 2)
+        self._isign = kwargs["isign"]
+        self._modeord = kwargs.get("modeord", 0)
 
         sh_op = [2 * self._N, 2 * self._M]
         if self._real:
@@ -1267,6 +1416,57 @@ class _NUFFT3(NUFFT):
                 dtype=pycrt.getPrecision().complex.value,
             )
         return out
+
+    @pycrt.enforce_precision()
+    def mesh(
+        self,
+        xp: pyct.ArrayModule = np,
+        coords: typ.Literal["normalized", "x", "z"] = "normalized",
+        upsampling: bool = False,
+    ) -> pyct.NDArray:
+        gamma = self._dilationfac
+        n_modes = self.fft_size[0] if upsampling else self._n_modes
+        h = 2 * np.pi / np.array(n_modes)
+        if coords in ["normalized", "z"]:
+            s = 1 + 0 * gamma if coords == "normalized" else 1 / gamma
+            mesh = xp.stack(
+                xp.meshgrid(
+                    *[xp.arange(-(mi // 2), (mi - 1) // 2 + 1) * si for mi, si in zip(n_modes, s)], indexing="ij"
+                ),
+                axis=-1,
+            )
+        else:
+            mesh = xp.stack(
+                xp.meshgrid(*[xp.arange(-np.pi, np.pi, hi) * gammai for hi, gammai in zip(h, gamma)], indexing="ij"),
+                axis=-1,
+            )
+        if self._modeord:
+            mesh = xp.stack([xp.fft.ifftshift(mesh[..., i], axes=i) for i in range(mesh.shape[-1])], axis=-1)
+        return mesh
+
+    @property
+    def fft_size(self) -> tuple[list, float]:
+        from scipy.fftpack import next_fast_len
+
+        u = 2.0 if self._upsampfac == 0 else self._upsampfac
+        n = np.ceil(2 * u * self._X * self._Z / np.pi + self.kernel_width).astype(int)
+        n = list(map(next_fast_len, n))
+        nbytes = np.prod(n) * pycrt.coerce(np.r_[1.0]).itemsize
+        return n, nbytes
+
+    @property
+    def _n_modes(self):
+        """Number of modes of the inner FFT grid before upsampling."""
+        u = 2.0 if self._upsampfac == 0 else self._upsampfac
+        n, _ = self.fft_size
+        return np.floor(np.array(n) / u).astype(int).tolist()
+
+    @property
+    def _dilationfac(self):
+        """Dilation factor :math:`\gamma` across each dimension."""
+        u = 2.0 if self._upsampfac == 0 else self._upsampfac
+        n, _ = self.fft_size
+        return np.array(n) / (2 * u * self._Z)
 
     def complex_matrix(self, xp: pyct.ArrayModule = np) -> pyct.NDArray:
         return xp.exp(1j * xp.sign(self._isign) * self._z @ self._x.T).astype(pycrt.getPrecision().complex.value)

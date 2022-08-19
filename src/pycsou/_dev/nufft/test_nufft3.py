@@ -1,5 +1,6 @@
 import dask.array as da
 import dask.distributed as dad
+import matplotlib.pyplot as plt
 import numpy as np
 
 import pycsou.operator.linop.nufft as nufft
@@ -10,15 +11,15 @@ if __name__ == "__main__":
     use_dask = False
     nufft_kwargs = dict(
         real=False,
-        eps=0,
+        eps=1e-12,
         isign=-1,
         n_trans=5,
         nthreads=0,
     )
 
     rng = np.random.default_rng(0)
-    D, M, N = 3, 200, 50
-    x = rng.normal(size=(M, D)) + 2000
+    D, M, N = 2, 200, 50
+    x = rng.normal(size=(M, D))
     z = rng.normal(size=(N, D))
     if use_dask:
         client = dad.Client(processes=False)  # processes=True yields a serialization error.
@@ -65,3 +66,17 @@ if __name__ == "__main__":
             )
         )
         print(res)
+
+        if nufft_kwargs["eps"] > 0 and D == 2:
+            A.plot_kernel()
+            plt.figure()
+            mesh = A.mesh(coords="x", upsampling=True)
+            plt.plot(mesh[..., 0], mesh[..., 1], "-k")
+            plt.plot(mesh[..., 0].T, mesh[..., 1].T, "-k")
+            plt.scatter(x[:, 0], x[:, 1], s=20, c="r")
+
+            plt.figure()
+            mesh = A.mesh(coords="z", upsampling=True)
+            plt.plot(mesh[..., 0], mesh[..., 1], "-k")
+            plt.plot(mesh[..., 0].T, mesh[..., 1].T, "-k")
+            plt.scatter(z[:, 0], z[:, 1], s=20, c="r")
