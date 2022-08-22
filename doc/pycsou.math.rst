@@ -12,6 +12,14 @@ pycsou.math.linalg module
    :undoc-members:
    :show-inheritance:
 
+pycsou.math.stencil module
+------------------------
+
+.. automodule:: pycsou.math.stencil
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 Module contents
 ---------------
 

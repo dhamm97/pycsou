@@ -7,6 +7,7 @@ import scipy.sparse as scisp
 import sparse as sp
 
 import pycsou.abc.operator as pyco
+import pycsou.math.stencil as pycstencil
 import pycsou.runtime as pycrt
 import pycsou.util as pycu
 import pycsou.util.deps as pycd
@@ -15,6 +16,10 @@ import pycsou.util.ptype as pyct
 if pycd.CUPY_ENABLED:
     import cupy as cp
     import cupyx.scipy.sparse as cusp
+
+import math
+import numbers
+from typing import Callable
 
 
 class ExplicitLinFunc(pyco.LinFunc):
@@ -395,3 +400,348 @@ class ExplicitLinOp(pyco.LinOp):
 
     def trace(self, **kwargs) -> float:
         return self.mat.trace().item()
+
+
+class Stencil(pyco.SquareOp):
+    r"""
+    Base class for NDArray computing functions that operate only on a local region of the NDArray through a
+    multi-dimensional kernel, namely through correlation and convolution.
+
+    This class leverages the :py:func:`numba.stencil` decorator, which allowing to JIT (Just-In-Time) compile these
+    functions to run more quickly.
+
+    Examples
+    --------
+    The following example creates a Stencil operator based on a 2-dimensional kernel. It shows how to perform correlation
+    and convolution in CPU, GPU (Cupy) and distributed across different cores (Dask).
+
+    .. code-block:: python3
+        from pycsou.operator.linop.base import Stencil
+        import numpy as np
+        import cupy as cp
+        import dask.array as da
+
+        nsamples = 2
+        data_shape = (5, 10)
+
+        # Numpy
+        data = np.ones((nsamples, *data_shape)).reshape(nsamples, -1)
+        # Cupy
+        data_cu = cp.ones((nsamples, *data_shape)).reshape(nsamples, -1)
+        # Dask
+        data_da = da.ones((nsamples, *data_shape)).reshape(nsamples, -1)
+
+        kernel = np.array([[0.5, 0, 0.5], [0, 0, 0], [0.5, 0, 0.5]])
+        center = np.array([1, 0])
+
+        stencil = Stencil(stencil_coefs=kernel, center=center, arg_shape=data_shape, mode=0.)
+        stencil_cu = Stencil(stencil_coefs=cp.asarray(kernel), center=center, arg_shape=data_shape, mode=0.)
+
+        # Correlate images with kernels
+        out = stencil(data).reshape(nsamples, *data_shape)
+        out_da = stencil(data_da).reshape(nsamples, *data_shape).compute()
+        out_cu = stencil_cu(data_cu).reshape(nsamples, *data_shape).get()
+
+        # Convolve images with kernels
+        out_adj = stencil.adjoint(data).reshape(nsamples, *data_shape)
+        out_da_adj = stencil.adjoint(data_da).reshape(nsamples, *data_shape).compute()
+        out_cu_adj = stencil_cu.adjoint(data_cu).reshape(nsamples, *data_shape).get()
+
+    Remark 1
+    --------
+    The :py:class:`~pycsou.operator.linop.base.Stencil` allows to perform both correlation and convolution. By default,
+    the ``apply`` method will perform **correlation** of the input array with the given kernel / stencil, whereas the
+    ``adjoint`` method will perform **convolution**.
+
+    Remark 2
+    --------
+    There are five padding mode supported: ‘reflect’, ‘periodic’, ‘nearest’, ‘none’ (zero padding), or 'cval'
+    (constant value). See `Dask's padding options <https://docs.dask.org/en/stable/array-overlap.html#boundaries>`_ to deal with
+    overlapping computations for a more detailed explanation.
+
+    Remark 3
+    --------
+    When applying performing a stencil computations with :py:func:`~Dask.array.map_overlap`, if the kernel is asymmetric,
+    then the only padding option allowed is 'none'. If a different padding option is desired, and Dask is
+    used, then a new symmetric kernel (with padded with zeros) will be created.
+
+    Remark 4
+    --------
+    By default, for GPU computing, the ``threadsperblock`` argument is set according to:
+
+    .. math::
+
+        \prod_{i=1}^{D} t_{i} \leq c
+
+    where :math:`D` is the number of dimensions of the input, and  :math:`c=1024` is the
+    `limit number of threads per block in current GPUs <https://docs.nvidia.com/cuda/cuda-c-programming-guide/>`_.
+    """
+
+    def __init__(
+        self,
+        stencil_coefs: pyct.NDArray,
+        center: pyct.NDArray,
+        arg_shape: pyct.Shape,
+        is_normal: bool = False,
+        **kwargs: typ.Optional[dict],
+    ):
+        r"""
+
+        Parameters
+        ----------
+        stencil_coefs: NDArray
+            Stencil coefficients. Must have the same number of dimension as the input array's arg_shape (i.e., without the
+            stacking dimension).
+        center: NDArray
+            Index of the kernel's center. Must be a 1-dimensional array with one element per dimension in ``stencil_coefs``.
+        arg_shape: tuple
+            Shape of the input array
+        is_normal: bool
+            Whether the resulting linear operator corresponds to a :py:class:`~pycsou.abc.operator.NormalOp`.
+        kwargs
+            Extra kwargs for `padding control <https://docs.dask.org/en/stable/array-overlap.html#boundaries>`_,
+            for `Numba's just-in-time compilation
+            <https://numba.readthedocs.io/en/stable/reference/jit-compilation.html?highlight=nogil>`_ (supported
+            arguments are ``parallel``, ``fastmath`` and ``nogil``, which are all used by default), and finally, the GPU
+            option ``threadsperblock``
+        """
+        size = np.prod(arg_shape).item()
+
+        if is_normal:
+            # TODO: CHANGE CLASS TO NormalOp (with __new__?)
+            pass
+
+        super(Stencil, self).__init__((size))
+        stencil_kwargs = dict(
+            [(key, kwargs.pop(key)) for key in list(kwargs.keys()) if key in ["parallel", "fastmath", "nogil"]]
+        )
+        self.arg_shape = arg_shape
+        self.ndim = len(arg_shape)
+        self._check_stencil_inputs(stencil_coefs, center, **kwargs)
+        self._make_stencils(self.stencil_coefs, **stencil_kwargs)
+
+    def _apply(self, arr: pyct.NDArray) -> pyct.NDArray:
+        return self._postprocess(self.stencil(self._preprocess(arr)), out_shape=arr.shape)
+
+    def _apply_dask(self, arr: pyct.NDArray) -> pyct.NDArray:
+        return arr.reshape(-1, *self.arg_shape).map_overlap(
+            self.stencil_dask, depth=self._depth, boundary=self._boundaries, dtype=pycrt.getPrecision().value
+        )
+
+    def _apply_cupy(self, arr: pyct.NDArray) -> pyct.NDArray:
+        out_shape = arr.shape
+        arr, out = self._allocate_output_preproc(arr)
+        blockspergrid = [math.ceil(out.shape[i] / tpb) for i, tpb in enumerate(self.threadsperblock)]
+        self.stencil[blockspergrid, self.threadsperblock](arr, out)
+        return self._postprocess(out, out_shape)
+
+    def _adjoint(self, arr: pyct.NDArray) -> pyct.NDArray:
+        return self._postprocess(
+            self.stencil_adjoint(self._preprocess(arr, direction="adjoint")), out_shape=arr.shape, direction="adjoint"
+        )
+
+    def _adjoint_dask(self, arr: pyct.NDArray) -> pyct.NDArray:
+        return arr.reshape(-1, *self.arg_shape).map_overlap(
+            self.stencil_adjoint_dask,
+            depth=self._depth_adjoint,
+            boundary=self._boundaries,
+            dtype=pycrt.getPrecision().value,
+        )
+
+    def _adjoint_cupy(self, arr: pyct.NDArray) -> pyct.NDArray:
+        out_shape = arr.shape
+        arr, out = self._allocate_output_preproc(arr, direction="adjoint")
+        blockspergrid = tuple([math.ceil(arr.shape[i] / tpb) for i, tpb in enumerate(self.threadsperblock)])
+        self.stencil_adjoint[blockspergrid, self.threadsperblock](arr, out)
+        return self._postprocess(out, out_shape, direction="adjoint")
+
+    @pycrt.enforce_precision(i="arr")
+    @pycu.redirect("arr", DASK=_apply_dask, CUPY=_apply_cupy)
+    def apply(self, arr: pyct.NDArray) -> pyct.NDArray:
+        r"""
+        Parameters
+        ----------
+        arr: NDArray
+            Array to be correlated with the kernel.
+
+        Returns
+        -------
+        out: NDArray
+            NDArray with same shape as the input NDArray, correlated with kernel.
+        """
+        return self._apply(arr)
+
+    @pycrt.enforce_precision(i="arr")
+    @pycu.redirect("arr", DASK=_adjoint_dask, CUPY=_adjoint_cupy)
+    def adjoint(self, arr: pyct.NDArray) -> pyct.NDArray:
+        r"""
+        Parameters
+        ----------
+        arr: NDArray
+            Array to be convolved with the kernel.
+
+        Returns
+        -------
+        out: NDArray
+            NDArray with same shape as the input NDArray, convolved with kernel.
+        """
+        return self._adjoint(arr)
+
+    def _make_stencils_cpu(self, stencil_coefs: pyct.NDArray, **kwargs) -> None:
+        self.stencil = pycstencil.make_nd_stencil(self.stencil_coefs, self.center, **kwargs)
+        self.stencil_dask = pycstencil.make_nd_stencil(self.stencil_coefs_dask, self.center_dask, **kwargs)
+        self.stencil_adjoint = pycstencil.make_nd_stencil(self.stencil_coefs_adjoint, self.center_adjoint, **kwargs)
+        self.stencil_adjoint_dask = pycstencil.make_nd_stencil(
+            self.stencil_coefs_adjoint_dask, self.center_adjoint_dask, **kwargs
+        )
+
+    def _make_stencils_gpu(self, stencil_coefs: pyct.NDArray, **kwargs) -> None:
+        self.stencil = pycstencil.make_nd_stencil_gpu(self.stencil_coefs, self.center)
+        self.stencil_dask = pycstencil.make_nd_stencil(self.stencil_coefs_dask, self.center_dask)
+        self.stencil_adjoint = pycstencil.make_nd_stencil_gpu(self.stencil_coefs_adjoint, self.center_adjoint)
+        self.stencil_adjoint_dask = pycstencil.make_nd_stencil(
+            self.stencil_coefs_adjoint_dask, self.center_adjoint_dask
+        )
+
+    @pycu.redirect("stencil_coefs", CUPY=_make_stencils_gpu)
+    def _make_stencils(self, stencil_coefs: pyct.NDArray, **kwargs) -> None:
+        self._make_stencils_cpu(stencil_coefs, **kwargs)
+
+    def _preprocess(self, arr: pyct.NDArray, direction: str = "apply") -> pyct.NDArray:
+        r"""
+        Pad input according to the kernel's shape and center.
+        """
+        xp = pycu.get_array_module(arr)
+        arr = arr.reshape(-1, *self.arg_shape)
+        for i in range(1, len(self.pad_withs[direction])):
+            padding_kwargs = {key: value[i] for key, value in self._padding_kwargs.items()}
+            _pad_width = tuple(
+                [(0, 0) if i != j else self.pad_withs[direction][i] for j in range(len(self.pad_withs[direction]))]
+            )
+            arr = xp.pad(array=arr, pad_width=_pad_width, **padding_kwargs)
+        return arr
+
+    def _postprocess(self, arr: pyct.NDArray, out_shape: pyct.Shape, direction: str = "apply") -> pyct.NDArray:
+        r"""
+        Unpad the output of the correlation/convolution to have shape (stacking_dims, *arg_shape).
+        """
+        return self._unpad(arr, direction=direction).reshape(out_shape)
+
+    def _check_stencil_inputs(self, stencil_coefs: pyct.NDArray, center: pyct.NDArray, **kwargs):
+        r"""
+        Check that inputs have the correct shape and correctly handle the boundary conditions.
+        """
+        assert len(center) == stencil_coefs.ndim == self.ndim, (
+            "The stencil coefficients should have the same"
+            " number of dimensions as `arg_shape` and the "
+            "same length as `center`."
+        )
+        xp = pycu.get_array_module(stencil_coefs)
+        self.stencil_coefs = self.stencil_coefs_dask = stencil_coefs
+        self.center = self.center_dask = xp.asarray(center)
+        self.stencil_coefs_adjoint = self.stencil_coefs_adjoint_dask = xp.flip(stencil_coefs)
+        self.center_adjoint = self.center_adjoint_dask = xp.array(stencil_coefs.shape) - 1 - xp.asarray(center)
+
+        ndim = stencil_coefs.ndim
+        mode = kwargs.get("mode", "none")
+        mode2 = dict()
+        cval = dict()
+        self.threadsperblock = kwargs.get("threadsperblock", [1] + [int(np.power(1024, 1 / (ndim)))] * (ndim))
+
+        assert len(self.threadsperblock) == ndim + 1, (
+            "`threadsperblock` must be a list with as many elements as "
+            "kernel dimensions plus one (for stacking dimension)"
+        )
+
+        if not isinstance(mode, dict):
+            mode = {i: mode for i in range(ndim + 1)}
+
+        for i in range(ndim + 1):
+
+            this_mode = mode.get(i, "none")
+            if this_mode == "none":
+                mode2.update(dict([(i, "constant")]))
+                cval.update(dict([(i, 0.0)]))
+
+            elif this_mode == "periodic":
+                mode2.update(dict([(i, "wrap")]))
+
+            elif this_mode == "reflect":
+                mode2.update(dict([(i, "reflect")]))
+
+            elif this_mode == "nearest":
+                mode2.update(dict([(i, "edge")]))
+
+            elif isinstance(this_mode, numbers.Number):
+                mode2.update(dict([(i, "constant")]))
+                cval.update(dict([(i, this_mode)]))
+            else:
+                raise ValueError(
+                    f"`mode` should be `reflect`, `periodic`, `nearest`, `none` or a constant value,"
+                    f" but got {this_mode} instead."
+                )
+
+        self._boundaries = mode
+        self._padding_kwargs = dict(mode=mode2, constant_values=cval)
+        depth_right = xp.array(self.stencil_coefs.shape) - self.center - 1
+        _pad_width = tuple([(0, 0)] + [(self.center[i].item(), depth_right[i].item()) for i in range(ndim)])
+        depth_right = xp.array(self.stencil_coefs_adjoint.shape) - self.center_adjoint - 1
+        _pad_width_adjoint = tuple(
+            [(0, 0)] + [(self.center_adjoint[i].item(), depth_right[i].item()) for i in range(ndim)]
+        )
+        self.pad_withs = dict(apply=_pad_width, adjoint=_pad_width_adjoint)
+        # If boundary conditions are not 'none' for some dimension, then Dask's map_overlap needs a symmetric kernel.
+        if any(map("none".__ne__, self._boundaries.values())):  # some key is not 'none' --> center dask kernel
+            self._depth, self.stencil_coefs_dask, self.center_dask = self._convert_sym_ker(
+                self.stencil_coefs_dask, self.center_dask
+            )
+            self._depth_adjoint, self.stencil_coefs_adjoint_dask, self.center_adjoint_dask = self._convert_sym_ker(
+                self.stencil_coefs_adjoint_dask, self.center_adjoint_dask
+            )
+        else:
+            depth_right = xp.array(self.stencil_coefs_dask.shape) - self.center_dask - 1
+            self._depth = {0: 0}
+            self._depth.update({i + 1: (self.center_dask[i], depth_right[i]) for i in range(self.ndim)})
+
+            depth_right = xp.array(self.stencil_coefs_adjoint_dask.shape) - self.center_adjoint_dask - 1
+            self._depth_adjoint = {0: 0}
+            self._depth_adjoint.update({i + 1: (self.center_adjoint_dask[i], depth_right[i]) for i in range(self.ndim)})
+
+    def _convert_sym_ker(
+        self, stencil_coefs: pyct.NDArray, center: pyct.NDArray
+    ) -> typ.Tuple[typ.Tuple, pyct.NDArray, pyct.NDArray]:
+        r"""
+        Creates a symmetric kernel stencil to use with Dask's map_overlap() in case of non-default ('none') boundary
+        conditions.
+        """
+        xp = pycu.get_array_module(stencil_coefs)
+        dist_center = (
+            -(xp.array(stencil_coefs.shape) // 2 - xp.asarray(center)) * 2
+            - xp.mod(xp.array(stencil_coefs.shape), 2)
+            + 1
+        )
+
+        pad_left = abs(xp.clip(dist_center, a_min=-xp.infty, a_max=0)).astype(int)
+        pad_right = xp.clip(dist_center, a_min=0, a_max=xp.infty).astype(int)
+        pad_width = tuple([(pad_left[i].item(), pad_right[i].item()) for i in range(self.ndim)])
+        stencil_coefs = xp.pad(stencil_coefs, pad_width=pad_width)
+        center = xp.array(stencil_coefs.shape) // 2
+
+        depth_sides = xp.array(stencil_coefs.shape) - center - 1
+        _depth = tuple([0] + [depth_sides[i] for i in range(self.ndim)])
+        return _depth, stencil_coefs, center
+
+    def _unpad(self, arr: pyct.NDArray, direction: str = "apply") -> pyct.NDArray:
+        slices = []
+        for (start, end) in self.pad_withs[direction]:
+            end = None if end == 0 else -end
+            slices.append(slice(start, end))
+        return arr[tuple(slices)]
+
+    def _allocate_output_preproc(
+        self, arr: pyct.NDArray, direction: str = "apply"
+    ) -> typ.Tuple[pyct.NDArray, pyct.NDArray]:
+        xp = pycu.get_array_module(arr)
+        arr = self._preprocess(arr, direction=direction)
+        out = xp.zeros_like(arr)
+        return arr, out
