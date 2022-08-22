@@ -1179,3 +1179,235 @@ class Hessian(_StackPartialDerivatives):
         else:
             param = tuple((dict() for _ in range(len(arg_shape))))
         return param
+
+
+def DirectionalDerivative(arg_shape: pyct.Shape, order: int, directions: pyct.NDArray, diff_method="gd", **diff_kwargs):
+    r"""
+    Directional derivative.
+    Computes the first or second directional derivative of a multi-dimensional array along either a single common
+    direction for all entries of the array or a different direction for each entry of the array.
+
+    TODO AFTER SEPAND'S PR --> Test with DiagonalOp
+
+    Parameters
+    ----------
+    arg_shape: tuple
+        Shape of the input array
+    order: int
+        Order of the directional derivative (restricted to 1 or 2).
+    directions: NDArray
+        Single direction (array of size :math:`n_\text{dims}`) or group of directions
+        (array of size :math:`[n_\text{dims} \times n_{d_0} \times ... \times n_{d_{n_\text{dims}}}]`)
+    diff_method: str ['gd', 'fd']
+        Method used to approximate the derivative. It can be the finite difference method (`fd`) or the Gaussian
+        derivative (`gd`).
+    diff_kwargs:
+        Arguments related to the padding and stencil parameters (see
+        :py:class:`~pycsou.operator.linop.diff.PartialDerivative`). See
+        :py:class:`~pycsou.operator.linop.base.Stencil` for more information on both types of parameters.
+
+    Returns
+    -------
+
+
+
+    The *first-order* ``DirectionalDerivative`` applies a derivative to a multi-dimensional array along the direction
+    defined by the unitary vector :math:`\mathbf{v}`:
+
+    .. math::
+        d_\mathbf{v}f =
+            \langle\nabla f, \mathbf{v}\rangle,
+
+    or along the directions defined by the unitary vectors
+
+    :math:`\mathbf{v}(x, y)`:
+    .. math::
+        d_\mathbf{v}(x,y) f =
+            \langle\nabla f(x,y), \mathbf{v}(x,y)\rangle
+
+    where we have here considered the 2-dimensional case.
+    Note that the 2D case, choosing :math:`\mathbf{v}=[1,0]` or :math:`\mathbf{v}=[0,1]`
+    is equivalent to the first-order ``PartialDerivative`` operator applied to axis 0 or 1 respectively.
+
+    The *second-order* ``DirectionalDerivative`` applies a second-order derivative to a multi-dimensional array along
+    the direction defined by the unitary vector :math:`\mathbf{v}`:
+    .. math::
+        d^2_\mathbf{v} f =
+            - d_\mathbf{v}^\ast (d_\mathbf{v} f)
+    where :math:`d_\mathbf{v}` is the first-order directional derivative implemented by
+    :py:func:`~pycsou.operator.linop.diff.FirstDirectionalDerivative`. The above formula generalises the well-known
+    relationship:
+    .. math::
+        \Delta f= -\text{div}(\nabla f),
+    where minus the divergence operator is the adjoint of the gradient.
+
+    **Note that problematic values at edges are set to zero.** TODO double check this statement
+
+
+    See Also
+    --------
+    :py:func:`~pycsou.operator.linop.diff.Gradient`, :py:func:`~pycsou.operator.linop.diff.DirectionalGradient`
+    """
+
+    assert (order == 1) | (order == 2), "`order` must be either 1 or 2"
+    order = (order,) * len(arg_shape)
+
+    if diff_method == "fd":
+        diff = Gradient.finite_difference(arg_shape=arg_shape, directions=order, **diff_kwargs)
+    elif diff_method == "gd":
+        diff = Gradient.gaussian_derivative(arg_shape=arg_shape, directions=order, **diff_kwargs)
+    else:
+        raise NotImplementedError
+
+    if directions.ndim == 1:
+        dop = pycob.DiagonalOp(directions) * diff
+    else:
+        dop = pycob.DiagonalOp(directions.ravel()) * diff
+
+    # Get gradient ( len(arg_shape), nsamples, *arg_shape),
+    # Multiply by directions (len(arg_shape), arg_shape)
+
+    if order == 1:
+        return dop
+    elif order == 2:
+        return -dop.adjoint(dop)
+
+
+def DirectionalGradient(arg_shape: pyct.Shape, diff_method="gd", **diff_kwargs):
+    r"""
+    Directional gradient.
+    Computes the directional derivative of a multi-dimensional array along multiple ``directions`` for each entry of
+    the array.
+
+    Parameters
+    ----------
+    arg_shape
+    diff_method
+    diff_kwargs
+
+    Returns
+    -------
+
+    Notes
+    -----
+    The ``DirectionalGradient`` of a multivariate function :math:`f(\mathbf{x})` is defined as:
+    .. math::
+        d_{\mathbf{v}_1(\mathbf{x}),\ldots,\mathbf{v}_N(\mathbf{x})} f =
+            \left[\begin{array}{c}
+            \langle\nabla f, \mathbf{v}_1(\mathbf{x})\rangle\\
+            \vdots\\
+            \langle\nabla f, \mathbf{v}_N(\mathbf{x})\rangle
+            \end{array}\right],
+    where :math:`d_\mathbf{v}` is the first-order directional derivative
+    implemented by :py:func:`~pycsou.operator.linop.diff.FirstDirectionalDerivative`.
+
+    See Also
+    --------
+    :py:func:`~pycsou.operator.linop.diff.Gradient`, :py:func:`~pycsou.operator.linop.diff.DirectionalDerivative`
+    """
+
+    dir_deriv = []
+    for i in range(len(arg_shape)):
+        directions = [0 if j != i else 1 for j in range(len(arg_shape))]
+        dir_deriv.append(
+            DirectionalDerivative(
+                arg_shape=arg_shape, order=1, directions=directions, diff_method=diff_method, **diff_kwargs
+            )
+        )
+    return pycc.vstack(dir_deriv)
+
+
+class Jacobian(pyco.LinOp):
+    """
+    NOTES
+    _____
+
+    See discussion about approximating a second order derivative from two successive first order derivatives (e.g.,
+    approximating the Hessian with the Jacobian of the gradient --> https://math.stackexchange.com/questions/3756717/finite-differences-second-derivative-as-successive-application-of-the-first-deri
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from pycsou.operator.linop.diff import Hessian, Jacobian, Gradient
+    >>> arg_shape = (4, 4)  # Shape of our image
+    >>> nsamples = 2  # Number of samples
+    >>> directions = ((0, 0), (0, 1), (1, 0), (1, 1))
+    >>> hessian = Hessian.finite_difference(arg_shape=arg_shape, directions=directions, diff_type="central")
+    >>> grad = Gradient.finite_difference(arg_shape=arg_shape, diff_type="central")
+    >>> jacobian = Jacobian(arg_shape, diff_method="fd",  diff_type="central")
+    >>> image = np.ones((nsamples, *arg_shape))
+    >>> image[:, [0,-1]] = 0
+    >>> image[:, :, [0,-1]] = 0
+    >>> print(image[0])
+    [[0. 0. 0. 0.]
+     [0. 1. 1. 0.]
+     [0. 1. 1. 0.]
+     [0. 0. 0. 0.]]
+    >>> image = image.reshape(nsamples, -1)
+    >>> out = hessian(image).reshape(nsamples, len(arg_shape) ** 2, *arg_shape)
+    >>> out2 = jacobian(grad(image).reshape(nsamples, len(arg_shape), -1)).reshape(nsamples, len(arg_shape) ** 2, *arg_shape)
+    >>> assert np.allclose(out, out2)
+    >>> print(out[0])
+    [[[ 0.    1.    1.    0.  ]
+      [ 0.   -1.   -1.    0.  ]
+      [ 0.   -1.   -1.    0.  ]
+      [ 0.    1.    1.    0.  ]]
+    <BLANKLINE>
+     [[ 0.25  0.25 -0.25 -0.25]
+      [ 0.25  0.25 -0.25 -0.25]
+      [-0.25 -0.25  0.25  0.25]
+      [-0.25 -0.25  0.25  0.25]]
+    <BLANKLINE>
+     [[ 0.25  0.25 -0.25 -0.25]
+      [ 0.25  0.25 -0.25 -0.25]
+      [-0.25 -0.25  0.25  0.25]
+      [-0.25 -0.25  0.25  0.25]]
+    <BLANKLINE>
+     [[ 0.    0.    0.    0.  ]
+      [ 1.   -1.   -1.    1.  ]
+      [ 1.   -1.   -1.    1.  ]
+      [ 0.    0.    0.    0.  ]]]
+    >>> print(out2[0])
+    [[[ 0.    0.25  0.25  0.  ]
+      [ 0.   -0.5  -0.5   0.  ]
+      [ 0.   -0.5  -0.5   0.  ]
+      [ 0.    0.25  0.25  0.  ]]
+    <BLANKLINE>
+     [[ 0.25  0.25 -0.25 -0.25]
+      [ 0.25  0.25 -0.25 -0.25]
+      [-0.25 -0.25  0.25  0.25]
+      [-0.25 -0.25  0.25  0.25]]
+    <BLANKLINE>
+     [[ 0.25  0.25 -0.25 -0.25]
+      [ 0.25  0.25 -0.25 -0.25]
+      [-0.25 -0.25  0.25  0.25]
+      [-0.25 -0.25  0.25  0.25]]
+    <BLANKLINE>
+     [[ 0.    0.    0.    0.  ]
+      [ 0.25 -0.5  -0.5   0.25]
+      [ 0.25 -0.5  -0.5   0.25]
+      [ 0.    0.    0.    0.  ]]]
+    """
+
+    def __init__(self, arg_shape, diff_method="gd", **kwargs):
+        self.arg_shape = arg_shape
+
+        if diff_method == "fd":
+            self.grad = Gradient.finite_difference(arg_shape, **kwargs)
+        elif diff_method == "gd":
+            self.grad = Gradient.gaussian_derivative(arg_shape, **kwargs)
+
+        size_dom = len(arg_shape) * np.prod(arg_shape)
+        size_codom = len(arg_shape) * len(arg_shape) * np.prod(arg_shape)
+        super(Jacobian, self).__init__((size_codom, size_dom))
+
+    def apply(self, arr):
+        xp = pycu.get_array_module(arr)
+        nsamples = arr.shape[0]
+        # arr = arr.reshape(nsamples, len(self.arg_shape), *self.arg_shape)
+        # out = xp.zeros((nsamples, len(self.arg_shape), len(self.arg_shape), *self.arg_shape))
+        # out = xp.zeros((nsamples, len(self.arg_shape), *self.arg_shape))
+        # for d in range(len(self.arg_shape)):
+        # out[:, d] = self.grad(arr[:, d].reshape(nsamples, -1)).reshape(nsamples, len(self.arg_shape), *self.arg_shape)
+        return self.grad(arr)
+        # return out.reshape(nsamples, -1)
