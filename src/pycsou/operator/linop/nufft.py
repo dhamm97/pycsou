@@ -1183,7 +1183,7 @@ class _NUFFT3(NUFFT):
         self._N, _ = kwargs["z"].shape
         self._x = kwargs["x"]
         self._z = kwargs["z"]
-        self._X, self._Z = pycu.compute(self._x.ptp(axis=0) / 2, self._z.ptp(axis=0) / 2)
+        self._X, self._Z = pycu.compute(np.ptp(self._x, axis=0) / 2, np.ptp(self._z, axis=0) / 2)
         self._isign = kwargs["isign"]
         self._modeord = kwargs.get("modeord", 0)
 
