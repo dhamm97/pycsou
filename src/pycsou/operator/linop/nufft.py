@@ -922,7 +922,7 @@ class _NUFFT1(NUFFT):
         return plan
 
     def _fw(self, arr: np.ndarray) -> np.ndarray:
-        out = self._plan["fw"].execute(arr.squeeze())  # ([n_trans], M) -> ([n_trans], N1,..., Nd)
+        out = self._plan["fw"].execute(np.atleast_1d(arr.squeeze()))  # ([n_trans], M) -> ([n_trans], N1,..., Nd)
         return out.reshape((self._n, np.prod(self._N)))
 
     def _fw_locked(self, arr: np.ndarray, lock: dad.Lock = None) -> np.ndarray:
@@ -930,7 +930,7 @@ class _NUFFT1(NUFFT):
             pycrt.getPrecision().complex.value
         )  # astype() is needed here because dask.distributed passes a dtype that FINUFFT does not recognize as the builtin np.dtype('complex128') (== passes but not "is" which FINUFFT uses)
         with lock:
-            out = self._plan["fw"].execute(arr.squeeze())  # ([n_trans], M) -> ([n_trans], N1,..., Nd)
+            out = self._plan["fw"].execute(np.atleast_1d(arr.squeeze()))  # ([n_trans], M) -> ([n_trans], N1,..., Nd)
         return out.reshape((self._n, np.prod(self._N)))[
             None, ...
         ]  # with map_blocks we can skip _postprocess by simply recreating the stacking axis after processing each chunk
@@ -957,12 +957,12 @@ class _NUFFT1(NUFFT):
         return plan
 
     def _bw(self, arr: np.ndarray) -> np.ndarray:
-        arr = arr.reshape((self._n, *self._N)).squeeze()
+        arr = np.atleast_1d(arr.reshape((self._n, *self._N)).squeeze())
         out = self._plan["bw"].execute(arr)  # ([n_trans], N1, ..., Nd) -> ([n_trans], M)
         return out.reshape((self._n, self._M))  # req. if squeeze-like behaviour above kicked in.
 
     def _bw_locked(self, arr: np.ndarray, lock: dad.Lock = None) -> np.ndarray:
-        arr = arr.reshape((self._n, *self._N)).squeeze()
+        arr = np.atleast_1d(arr.reshape((self._n, *self._N)).squeeze())
         arr = arr.astype(
             pycrt.getPrecision().complex.value
         )  # astype() is needed here because dask.distributed passes a dtype that FINUFFT does not recognize as the builtin np.dtype('complex128') (== passes but not "is" which FINUFFT uses)
@@ -1232,7 +1232,7 @@ class _NUFFT3(NUFFT):
         return plan
 
     def _fw(self, arr: np.ndarray) -> np.ndarray:
-        out = self._plan["fw"].execute(arr.squeeze())  # ([n_trans], M) -> ([n_trans], N)
+        out = self._plan["fw"].execute(np.atleast_1d(arr.squeeze()))  # ([n_trans], M) -> ([n_trans], N)
         return out.reshape((self._n, self._N))
 
     def _fw_locked(self, arr: np.ndarray, lock: dad.Lock = None) -> np.ndarray:
@@ -1240,7 +1240,7 @@ class _NUFFT3(NUFFT):
             pycrt.getPrecision().complex.value
         )  # astype() is needed here because dask.distributed passes a dtype that FINUFFT does not recognize as the builtin np.dtype('complex128') (== passes but not "is" which FINUFFT uses)
         with lock:
-            out = self._plan["fw"].execute(arr.squeeze())  # ([n_trans], M) -> ([n_trans], N)
+            out = self._plan["fw"].execute(np.atleast_1d(arr.squeeze()))  # ([n_trans], M) -> ([n_trans], N)
         return out.reshape((self._n, self._N))[
             None, ...
         ]  # with map_blocks we can skip _postprocess by simply recreating the stacking axis after processing each chunk
@@ -1272,7 +1272,7 @@ class _NUFFT3(NUFFT):
         return plan
 
     def _bw(self, arr: np.ndarray) -> np.ndarray:
-        out = self._plan["bw"].execute(arr.squeeze())  # ([n_trans,] N) -> ([n_trans,] M)
+        out = self._plan["bw"].execute(np.atleast_1d(arr.squeeze()))  # ([n_trans,] N) -> ([n_trans,] M)
         return out.reshape((self._n, self._M))
 
     def _bw_locked(self, arr: np.ndarray, lock: dad.Lock = None) -> np.ndarray:
@@ -1280,7 +1280,7 @@ class _NUFFT3(NUFFT):
             pycrt.getPrecision().complex.value
         )  # astype() is needed here because dask.distributed passes a dtype that FINUFFT does not recognize as the builtin np.dtype('complex128') (== passes but not "is" which FINUFFT uses)
         with lock:
-            out = self._plan["bw"].execute(arr.squeeze())  # ([n_trans], N) -> ([n_trans], M)
+            out = self._plan["bw"].execute(np.atleast_1d(arr.squeeze()))  # ([n_trans], N) -> ([n_trans], M)
         return out.reshape((self._n, self._M))[
             None, ...
         ]  # with map_blocks we can skip _postprocess by simply recreating the stacking axis after processing each chunk
