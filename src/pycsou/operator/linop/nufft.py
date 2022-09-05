@@ -1032,7 +1032,7 @@ class _NUFFT1(NUFFT):
 
     def _nudft_apply(self, arr: pyct.NDArray) -> pyct.NDArray:
         if isinstance(arr, da.Array):
-            out = da.tensordot(arr, self.complex_matrix(pycu.get_array_module(arr)), axes=(-1, -1))
+            out = da.tensordot(arr, self.complex_matrix(pycu.get_array_module(arr)), axes=(arr.ndim - 1, -1))
         else:
             out = _nudft(
                 weights=arr,
@@ -1105,7 +1105,7 @@ class _NUFFT1(NUFFT):
 
     def _nudft_adjoint(self, arr: pyct.NDArray) -> pyct.NDArray:
         if isinstance(arr, da.Array):
-            out = da.tensordot(arr, self.complex_matrix(pycu.get_array_module(arr)).conj().T, axes=(-1, -1))
+            out = da.tensordot(arr, self.complex_matrix(pycu.get_array_module(arr)).conj().T, axes=(arr.ndim - 1, 1))
         else:
             out = _nudft(
                 weights=arr,
@@ -1343,7 +1343,7 @@ class _NUFFT3(NUFFT):
 
     def _nudft_apply(self, arr: pyct.NDArray) -> pyct.NDArray:
         if isinstance(arr, da.Array):
-            out = da.tensordot(arr, self.complex_matrix(pycu.get_array_module(arr)), axes=(-1, -1))
+            out = da.tensordot(arr, self.complex_matrix(pycu.get_array_module(arr)), axes=(arr.ndim - 1, 1))
         else:
             out = _nudft(
                 weights=arr,
@@ -1406,7 +1406,7 @@ class _NUFFT3(NUFFT):
 
     def _nudft_adjoint(self, arr: pyct.NDArray) -> pyct.NDArray:
         if isinstance(arr, da.Array):
-            out = da.tensordot(arr, self.complex_matrix(pycu.get_array_module(arr)).conj().T, axes=(-1, -1))
+            out = da.tensordot(arr, self.complex_matrix(pycu.get_array_module(arr)).conj().T, axes=(arr.ndim - 1, 1))
         else:
             out = _nudft(
                 weights=arr,
